@@ -1,0 +1,14 @@
+# Local agent and account configuration
+.agents/
+.aws/
+.codex/
+
+# Python environments, caches, and local environment variables
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+.env.*
+!.env.example
+
+.DS_Store
