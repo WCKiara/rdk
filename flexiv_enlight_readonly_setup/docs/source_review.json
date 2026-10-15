@@ -1,0 +1,55 @@
+{
+  "reviewed_date": "2026-10-12",
+  "repository": "https://github.com/flexivrobotics/flexiv_rdk",
+  "commit": "159d41f3ab7fbd74117b6357ba612a0842bed6b9",
+  "tag_description": "v2.1-1-g159d41f",
+  "path": "third_party/flexiv_rdk/example_py/basics1_display_robot_states.py",
+  "sha256": "202904f14a95ef018ee924aa75f044aa74ef8cd4c6c7f2fd8c07e8ffd0e5e864",
+  "manual_inspection": true,
+  "readonly_approved": false,
+  "reason": "ClearFault() and ServoOn() change controller/servo state; prohibited by CODEX_FLEXIV_RDK_SETUP.md.",
+  "robot_calls": [
+    {
+      "method": "fault",
+      "line": 110
+    },
+    {
+      "method": "ServoOn",
+      "line": 120
+    },
+    {
+      "method": "digital_inputs",
+      "line": 75
+    },
+    {
+      "method": "digital_outputs",
+      "line": 77
+    },
+    {
+      "method": "operational",
+      "line": 123
+    },
+    {
+      "method": "states",
+      "line": 33
+    },
+    {
+      "method": "actions",
+      "line": 59
+    },
+    {
+      "method": "ClearFault",
+      "line": 113
+    },
+    {
+      "method": "info",
+      "line": 28
+    }
+  ],
+  "api_review": [
+    "include/flexiv/rdk/robot.hpp constructor and info()/states() accessors",
+    "include/flexiv/rdk/data.hpp RobotInfo/RobotStates fields"
+  ],
+  "manual_revision": "v2.x URL path, English; fetched 2026-10-12; static footer shows 1.x but dynamic script derives v2.x from URL; no immutable documentation revision published",
+  "upstream_guidance": "llms.txt read; its control/servo patterns are overridden by user read-only restrictions"
+}

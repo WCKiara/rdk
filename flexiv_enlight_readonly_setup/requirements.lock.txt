@@ -1,0 +1,5 @@
+flexivrdk==2.1.0
+numpy==2.2.6
+scipy==1.15.3
+pybind11==3.1.0
+spdlog==2.0.6
