@@ -6,7 +6,5 @@ config/robot.env
 docs/SETUP_REPORT.md
 logs/*
 !logs/.gitkeep
-third_party/flexiv_rdk/
-third_party/flexiv_rdk_v2.2/
 .build/
 .rdk-v2.2/

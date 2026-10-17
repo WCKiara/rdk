@@ -1,0 +1,290 @@
+/**
+ * @file utility.hpp
+ * @note Thread safety: all functions declared in this file are thread-safe and can be called
+ * concurrently from multiple threads.
+ * @copyright Copyright (C) 2016-2026 Flexiv Ltd. All Rights Reserved.
+ */
+
+#ifndef FLEXIV_RDK_UTILITY_HPP_
+#define FLEXIV_RDK_UTILITY_HPP_
+
+#include "data.hpp"
+#include <Eigen/Eigen>
+#include <algorithm>
+#include <sstream>
+
+namespace flexiv::rdk {
+
+namespace utility {
+
+/** @brief Whether the specified group represents a single arm. */
+inline bool IsSingleArmGroup(JointGroup group)
+{
+    return group == JointGroup::ARM_1 || group == JointGroup::ARM_2;
+}
+
+/**
+ * @brief Check whether one primitive state is true.
+ * @param[in] primitive_states Primitive states.
+ * @param[in] state_name Primitive state name to check, e.g. "reachedTarget".
+ * @return True if the state exists and its integer value is non-zero.
+ */
+inline bool PrimitiveStateTrue(
+    const PrimitiveStates& primitive_states, const std::string& state_name)
+{
+    const auto state_it = primitive_states.names_and_values.find(state_name);
+    if (state_it == primitive_states.names_and_values.end()) {
+        return false;
+    }
+
+    if (!std::holds_alternative<int>(state_it->second)) {
+        return false;
+    }
+
+    return std::get<int>(state_it->second) != 0;
+}
+
+/**
+ * @brief Check whether one primitive state is true for all groups included in [primitive_states].
+ * @param[in] primitive_states Primitive states keyed by joint group.
+ * @param[in] state_name Primitive state name to check, e.g. "reachedTarget".
+ * @return True if all included groups contain the state and its integer value is non-zero.
+ */
+inline bool PrimitiveStateTrueForGroups(
+    const std::map<JointGroup, PrimitiveStates>& primitive_states, const std::string& state_name)
+{
+    return std::all_of(primitive_states.begin(), primitive_states.end(),
+        [&](const auto& entry) { return PrimitiveStateTrue(entry.second, state_name); });
+}
+
+/**
+ * @brief Check whether one primitive state is true for each group included in [primitive_states],
+ * using a per-group state name.
+ * @param[in] primitive_states Primitive states keyed by joint group.
+ * @param[in] state_names Primitive state names keyed by joint group.
+ * @return True if every included group has a matching state name entry and its integer value is
+ * non-zero.
+ */
+inline bool PrimitiveStateTrueForGroups(
+    const std::map<JointGroup, PrimitiveStates>& primitive_states,
+    const std::map<JointGroup, std::string>& state_names)
+{
+    return std::all_of(primitive_states.begin(), primitive_states.end(), [&](const auto& entry) {
+        if (!state_names.contains(entry.first)) {
+            return false;
+        }
+        return PrimitiveStateTrue(entry.second, state_names.at(entry.first));
+    });
+}
+
+/**
+ * @brief Convert quaternion to Euler angles with ZYX axis rotations.
+ * @param[in] quat Quaternion input in [w,x,y,z] order.
+ * @return Euler angles in [x,y,z] order [rad].
+ * @note The return value, when converted to degrees, is the same Euler angles used by Move
+ * primitives.
+ */
+inline std::array<double, 3> Quat2EulerZYX(const std::array<double, 4>& quat)
+{
+    // Form quaternion
+    Eigen::Quaterniond q(quat[0], quat[1], quat[2], quat[3]);
+
+    // The returned array is in [z,y,x] order
+    auto euler_ZYX = q.toRotationMatrix().eulerAngles(2, 1, 0);
+
+    // Convert to general [x,y,z] order
+    return (std::array<double, 3> {euler_ZYX[2], euler_ZYX[1], euler_ZYX[0]});
+}
+
+/**
+ * @brief Convert radians to degrees for a single value.
+ */
+inline double Rad2Deg(double rad)
+{
+    constexpr double kPi = 3.14159265358979323846;
+    return (rad / kPi * 180.0);
+}
+
+/**
+ * @brief Convert radians to degrees for an array.
+ */
+template <size_t N>
+inline std::array<double, N> Rad2Deg(const std::array<double, N>& rad_arr)
+{
+    std::array<double, N> deg_arr;
+    for (size_t i = 0; i < N; i++) {
+        deg_arr[i] = Rad2Deg(rad_arr[i]);
+    }
+    return deg_arr;
+}
+
+/**
+ * @brief Convert radians to degrees for a vector.
+ */
+inline std::vector<double> Rad2Deg(const std::vector<double>& rad_vec)
+{
+    std::vector<double> deg_vec;
+    for (const auto& v : rad_vec) {
+        deg_vec.push_back(Rad2Deg(v));
+    }
+    return deg_vec;
+}
+
+/**
+ * @brief Convert an std::vector to a string.
+ * @param[in] vec std::vector of any type and size.
+ * @param[in] decimal Decimal places to keep for each floating-point number in the vector.
+ * @param[in] separator Character to separate between numbers.
+ * @return The converted string.
+ */
+template <typename T>
+inline std::string Vec2Str(
+    const std::vector<T>& vec, size_t decimal = 3, const std::string& separator = " ")
+{
+    std::string padding = "";
+    std::ostringstream oss;
+    oss.precision(decimal);
+    oss << std::fixed;
+
+    for (const auto& v : vec) {
+        oss << padding << v;
+        padding = separator;
+    }
+    return oss.str();
+}
+
+/**
+ * @brief Convert an std::array to a string.
+ * @param[in] arr std::array of any type and size.
+ * @param[in] decimal Decimal places to keep for each floating-point number in the array.
+ * @param[in] separator Character to separate between numbers.
+ * @return The converted string.
+ */
+template <typename T, size_t N>
+inline std::string Arr2Str(
+    const std::array<T, N>& arr, size_t decimal = 3, const std::string& separator = " ")
+{
+    std::vector<T> vec(N);
+    std::copy(arr.begin(), arr.end(), vec.begin());
+    return Vec2Str(vec, decimal, separator);
+}
+
+/**
+ * @brief Convert a vector of Flexiv data structs to a string, with the elements separated by " : ".
+ * @param[in] vec std::vector of rdk::JPos, rdk::Coord, rdk::DJPos, rdk::DCoord or rdk::OCoord.
+ * @return The converted string.
+ */
+template <typename T>
+inline std::string StructVec2Str(const std::vector<T>& vec)
+{
+    std::string ret;
+    // Separate two structs by " : "
+    for (const auto& v : vec) {
+        ret += v.str() + " : ";
+    }
+    // Remove the trailing " : "
+    if (!ret.empty()) {
+        ret.erase(ret.size() - 3);
+    }
+    return ret;
+}
+
+/**
+ * @brief Convert the commonly used std::variant to a string.
+ * @param[in] variant std::variant used by multiple rdk::Robot functions.
+ * @param[in] decimal Decimal places to keep for each floating-point number in the variant.
+ * @param[in] separator Character to separate between numbers in the vector.
+ * @return The converted string.
+ * @note The Flexiv data structs (rdk::JPos, rdk::Coord, rdk::DJPos, rdk::DCoord and rdk::OCoord)
+ * are converted using their own str() function, which always keeps 2 decimal places and separates
+ * the numbers by space, thus [decimal] and [separator] do not apply to them.
+ */
+inline std::string FlexivTypes2Str(
+    const rdk::FlexivDataTypes& variant, size_t decimal = 3, const std::string& separator = " ")
+{
+    if (auto* val = std::get_if<int>(&variant)) {
+        return Vec2Str(std::vector<int> {*val}, decimal);
+    } else if (auto* val = std::get_if<double>(&variant)) {
+        return Vec2Str(std::vector<double> {*val}, decimal);
+    } else if (auto* val = std::get_if<std::string>(&variant)) {
+        return *val;
+    } else if (auto* val = std::get_if<rdk::JPos>(&variant)) {
+        return (*val).str();
+    } else if (auto* val = std::get_if<rdk::Coord>(&variant)) {
+        return (*val).str();
+    } else if (auto* val = std::get_if<rdk::DJPos>(&variant)) {
+        return (*val).str();
+    } else if (auto* val = std::get_if<rdk::DCoord>(&variant)) {
+        return (*val).str();
+    } else if (auto* val = std::get_if<rdk::OCoord>(&variant)) {
+        return (*val).str();
+    } else if (auto* vec = std::get_if<std::vector<int>>(&variant)) {
+        return Vec2Str(*vec, decimal, separator);
+    } else if (auto* vec = std::get_if<std::vector<double>>(&variant)) {
+        return Vec2Str(*vec, decimal, separator);
+    } else if (auto* vec = std::get_if<std::vector<std::string>>(&variant)) {
+        return Vec2Str(*vec, decimal, separator);
+    } else if (auto* vec = std::get_if<std::vector<rdk::JPos>>(&variant)) {
+        return StructVec2Str(*vec);
+    } else if (auto* vec = std::get_if<std::vector<rdk::Coord>>(&variant)) {
+        return StructVec2Str(*vec);
+    } else if (auto* vec = std::get_if<std::vector<rdk::DJPos>>(&variant)) {
+        return StructVec2Str(*vec);
+    } else if (auto* vec = std::get_if<std::vector<rdk::DCoord>>(&variant)) {
+        return StructVec2Str(*vec);
+    } else if (auto* vec = std::get_if<std::vector<rdk::OCoord>>(&variant)) {
+        return StructVec2Str(*vec);
+    }
+    return "";
+}
+
+/**
+ * @brief Check if any provided strings exist in the program arguments.
+ * @param[in] argc Argument count passed to main() of the program.
+ * @param[in] argv Argument vector passed to main() of the program, where argv[0] is the program
+ * name.
+ * @param[in] ref_strings Reference strings to check against.
+ * @return True if the program arguments contain one or more reference strings.
+ */
+inline bool ProgramArgsExistAny(int argc, char** argv, const std::vector<std::string>& ref_strings)
+{
+    for (int i = 0; i < argc; i++) {
+        for (const auto& v : ref_strings) {
+            if (v == std::string(argv[i])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief Check if one specific string exists in the program arguments.
+ * @param[in] argc Argument count passed to main() of the program.
+ * @param[in] argv Argument vector passed to main() of the program, with argv[0] being the program
+ * name.
+ * @param[in] ref_strings Reference string to check against.
+ * @return True if the program arguments contain this specific reference string.
+ */
+inline bool ProgramArgsExist(int argc, char** argv, const std::string& ref_strings)
+{
+    return ProgramArgsExistAny(argc, argv, {ref_strings});
+}
+
+/**
+ * @brief Scan the network for robots currently reachable by RDK and return their serial numbers.
+ * @param[in] timeout_ms Duration [ms] to listen for robots advertising on the network before
+ * returning. A longer timeout gives more robots a chance to be discovered.
+ * @return Sorted vector of serial numbers (dash-separated format) of the discovered robots. Empty
+ * if none were found within the timeout.
+ * @note This function opens (or reuses) a Zenoh session and passively listens for the realtime
+ * states that every running robot publishes, then collects the unique serial numbers seen. Only
+ * robots whose control is currently running and reachable on the same Zenoh network are discovered.
+ * @warning This is a blocking function that returns after [timeout_ms].
+ */
+RDK_API std::vector<std::string> ScanRobotsInNetwork(unsigned int timeout_ms = 1000);
+
+} /* namespace utility */
+} /* namespace flexiv::rdk */
+
+#endif /* FLEXIV_RDK_UTILITY_HPP_ */

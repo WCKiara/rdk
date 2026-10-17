@@ -1,6 +1,6 @@
 # Official upstream source
 
-The clone is at `flexiv_rdk/`, downloaded from https://github.com/flexivrobotics/flexiv_rdk. The clone is ignored so it is not accidentally vendored. Full commit and SHA-256 inspection evidence for the reviewed state-display example are in `../docs/source_review.json`.
+Source snapshots from https://github.com/flexivrobotics/flexiv_rdk are included at `flexiv_rdk/` and `flexiv_rdk_v2.2/`. Their Git metadata and local Python caches are excluded. Full commit and SHA-256 inspection evidence for the reviewed state-display example are in `../docs/source_review.json`.
 
 At the user's explicit request on 2026-10-13, `example_py/intermediate4_non_realtime_cartesian_motion_force_control.py` was locally customized with Chinese parameter comments, single-arm selection (default ARM_1), simultaneous diagonal position motion and tool orientation changes, and monitored TCP position bounds. It uses pure position control. `--home-only` executes just the selected arm's preset Home primitive with boundary monitoring, then stops; diagonal motion is a separate invocation. The default Z lower bound is the fixed midpoint of the measured post-Home Z and the pre-Home Z. These are software bounds, not controller safety settings. The clone's original version can be retrieved from its Git history.
 
