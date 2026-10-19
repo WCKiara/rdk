@@ -20,7 +20,7 @@ Existing system Python package remains 1.7.0, and project `.venv` remains 2.1.0.
 
 - Source: [official release/v2.2 commit](https://github.com/flexivrobotics/flexiv_rdk/tree/36639f38525631b5caac2608a88b23af60d5dd5f).
 - Commit: `36639f38525631b5caac2608a88b23af60d5dd5f`.
-- Untouched source checkout: `third_party/flexiv_rdk_v2.2/`.
+- The source checkout used for this installation was later removed from this repository.
 - Binary: `libflexiv_rdk.x86_64-linux-gnu.so` from the official v2.2 GitHub release.
 - SHA-256: `8205d3491c651b4490995f3d1f8cf7125e1e039309812869ddf8dc59fd1376e5`.
 
