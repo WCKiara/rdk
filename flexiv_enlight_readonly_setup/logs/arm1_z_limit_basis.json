@@ -1,0 +1,10 @@
+{
+  "arm": "ARM_1",
+  "frame": "WORLD",
+  "unit": "m",
+  "read_at_utc": "2026-10-14T00:12:10.856721+00:00",
+  "current_z": 0.12149951606988907,
+  "previous_z": -0.026941440999507904,
+  "previous_source": "2026-10-13 ARM_1 home-only run: TCP before Home",
+  "z_min_midpoint": 0.04727903753519058
+}

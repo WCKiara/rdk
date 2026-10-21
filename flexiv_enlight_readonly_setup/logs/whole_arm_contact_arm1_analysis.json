@@ -1,0 +1,313 @@
+{
+  "source": "whole_arm_contact.csv",
+  "extracted_arm1_csv": "whole_arm_contact_arm1_extracted.csv",
+  "samples": 1198,
+  "arm1_rows": 8386,
+  "links": 7,
+  "span_s": 59.985505215,
+  "rate_hz": 19.95482068059131,
+  "sample_interval_median_ms": 50.099164,
+  "sample_interval_max_ms": 50.554597,
+  "robot_span_s": 59.98176348,
+  "robot_and_host_initial_clock_difference_s": 28917.624808517,
+  "group_link_counts": {
+    "ALL": 14,
+    "ARMS": 14,
+    "ARM_1": 7,
+    "ARM_2": 7
+  },
+  "ALL_matches_ARMS_exactly": true,
+  "ALL_matches_concatenated_single_arms_exactly": true,
+  "ALL_vs_ARMS_max_absolute_difference": 0.0,
+  "ALL_vs_concatenated_arms_max_absolute_difference": 0.0,
+  "unit_caveat": "N and m are nominal recorder units; v2.1 multi-contact docs do not explicitly annotate units.",
+  "link_statistics": [
+    {
+      "link_index": 0,
+      "samples": 1198,
+      "norm_mean": 313.4779281566662,
+      "norm_std": 1.153119478686863,
+      "norm_min": 311.07702573473074,
+      "norm_max": 316.0592134655652,
+      "zero_force_and_position_percent": 0.0,
+      "force_component_mean": [
+        -23.674161352179883,
+        297.94715178271565,
+        94.5261632508547
+      ],
+      "force_component_std": [
+        0.32602025587083827,
+        1.0182606950162798,
+        0.6567128664621728
+      ],
+      "position_mean_m_nominal": [
+        0.007168632633097856,
+        -0.049483426450090934,
+        0.09746043823149447
+      ],
+      "position_std_mm_nominal": [
+        0.034379323739261315,
+        0.004978764917405528,
+        0.08265199892555716
+      ],
+      "first5s_force_mean": [
+        -23.860659618377685,
+        299.5416329956055,
+        95.57804161071778
+      ],
+      "last5s_force_mean": [
+        -23.605112743377685,
+        296.46726989746094,
+        93.72773666381836
+      ],
+      "last5s_minus_first5s_norm_mean": -3.499631061911316,
+      "max_step_change_force_vector_norm": 1.0949106657206105
+    },
+    {
+      "link_index": 1,
+      "samples": 1198,
+      "norm_mean": 351.50787659373447,
+      "norm_std": 1.1632321359953104,
+      "norm_min": 348.85729023057115,
+      "norm_max": 354.0919610923286,
+      "zero_force_and_position_percent": 0.0,
+      "force_component_mean": [
+        -8.36179430098685,
+        -175.77377002187484,
+        304.2880765122046
+      ],
+      "force_component_std": [
+        0.32893099569186773,
+        0.6135278675510307,
+        1.041376618628848
+      ],
+      "position_mean_m_nominal": [
+        0.001662751229266902,
+        0.04092842634325732,
+        -0.08697228921026937
+      ],
+      "position_std_mm_nominal": [
+        0.07457003232507904,
+        0.12680381587478662,
+        0.002486609688816924
+      ],
+      "first5s_force_mean": [
+        -8.274397168159485,
+        -176.79935577392578,
+        305.8172259521484
+      ],
+      "last5s_force_mean": [
+        -8.487498064041137,
+        -174.9197169494629,
+        302.77314208984376
+      ],
+      "last5s_minus_first5s_norm_mean": -3.5700459056319005,
+      "max_step_change_force_vector_norm": 1.122783539678588
+    },
+    {
+      "link_index": 2,
+      "samples": 1198,
+      "norm_mean": 295.1471516268025,
+      "norm_std": 1.1733320499525342,
+      "norm_min": 292.85145744003916,
+      "norm_max": 297.89197621398785,
+      "zero_force_and_position_percent": 0.0,
+      "force_component_mean": [
+        5.947854974234044,
+        -215.8496532663081,
+        201.20931538118543
+      ],
+      "force_component_std": [
+        0.3070784511714652,
+        0.9484550291441805,
+        0.765223661032916
+      ],
+      "position_mean_m_nominal": [
+        -0.0016588408835986335,
+        0.049972463958898254,
+        0.07831098088288745
+      ],
+      "position_std_mm_nominal": [
+        0.033002533596066155,
+        0.001096326328833542,
+        0.09870098346145571
+      ],
+      "first5s_force_mean": [
+        5.9717402839660645,
+        -217.2692855834961,
+        202.50870056152343
+      ],
+      "last5s_force_mean": [
+        6.039644417762756,
+        -214.40081420898437,
+        200.16732345581056
+      ],
+      "last5s_minus_first5s_norm_mean": -3.692543335161872,
+      "max_step_change_force_vector_norm": 1.138096198432504
+    },
+    {
+      "link_index": 3,
+      "samples": 1198,
+      "norm_mean": 228.83116904537454,
+      "norm_std": 0.9776040161529084,
+      "norm_min": 226.82235138471373,
+      "norm_max": 230.78180160974642,
+      "zero_force_and_position_percent": 0.0,
+      "force_component_mean": [
+        -9.638703428246144,
+        -10.945227174806675,
+        228.36565940487563
+      ],
+      "force_component_std": [
+        0.2651866829157612,
+        0.22582647135433567,
+        0.9804680534087712
+      ],
+      "position_mean_m_nominal": [
+        -0.0027041790069380965,
+        0.009915269899628248,
+        -0.07690838534689706
+      ],
+      "position_std_mm_nominal": [
+        0.09032228584544429,
+        0.16346986366470942,
+        0.006109309471324452
+      ],
+      "first5s_force_mean": [
+        -9.511474380493164,
+        -10.961912202835084,
+        229.70219940185547
+      ],
+      "last5s_force_mean": [
+        -9.873821392059327,
+        -10.86646201133728,
+        226.90001052856445
+      ],
+      "last5s_minus_first5s_norm_mean": -2.7856900293787135,
+      "max_step_change_force_vector_norm": 0.9302567168105079
+    },
+    {
+      "link_index": 4,
+      "samples": 1198,
+      "norm_mean": 0.0,
+      "norm_std": 0.0,
+      "norm_min": 0.0,
+      "norm_max": 0.0,
+      "zero_force_and_position_percent": 100.0,
+      "force_component_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "force_component_std": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "position_mean_m_nominal": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "position_std_mm_nominal": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "first5s_force_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "last5s_force_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "last5s_minus_first5s_norm_mean": 0.0,
+      "max_step_change_force_vector_norm": 0.0
+    },
+    {
+      "link_index": 5,
+      "samples": 1198,
+      "norm_mean": 35.24749527604209,
+      "norm_std": 0.1842281057243651,
+      "norm_min": 34.50618981782366,
+      "norm_max": 35.860128939752684,
+      "zero_force_and_position_percent": 0.0,
+      "force_component_mean": [
+        21.134113397741558,
+        -12.672256049409334,
+        25.2006134994838
+      ],
+      "force_component_std": [
+        0.22066515502090153,
+        0.1740685168362488,
+        0.18200832288220137
+      ],
+      "position_mean_m_nominal": [
+        -0.0384452471941809,
+        0.036651821760382994,
+        -0.03773810290645976
+      ],
+      "position_std_mm_nominal": [
+        0.09680816446780675,
+        0.5618608412740947,
+        0.33746394190188517
+      ],
+      "first5s_force_mean": [
+        21.367927436828612,
+        -12.611328191757202,
+        25.277629318237306
+      ],
+      "last5s_force_mean": [
+        21.079948539733888,
+        -12.886883811950684,
+        25.00709186553955
+      ],
+      "last5s_minus_first5s_norm_mean": -0.26639404938109124,
+      "max_step_change_force_vector_norm": 0.7561811080981855
+    },
+    {
+      "link_index": 6,
+      "samples": 1198,
+      "norm_mean": 0.0,
+      "norm_std": 0.0,
+      "norm_min": 0.0,
+      "norm_max": 0.0,
+      "zero_force_and_position_percent": 100.0,
+      "force_component_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "force_component_std": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "position_mean_m_nominal": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "position_std_mm_nominal": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "first5s_force_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "last5s_force_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "last5s_minus_first5s_norm_mean": 0.0,
+      "max_step_change_force_vector_norm": 0.0
+    }
+  ]
+}

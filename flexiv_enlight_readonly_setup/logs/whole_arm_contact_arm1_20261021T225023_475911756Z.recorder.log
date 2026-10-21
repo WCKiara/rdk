@@ -1,0 +1,6 @@
+[2026-10-21 15:50:23.544] [info] | | | | | | | | | |  Flexiv RDK v2.1  | | | | | | | | | |
+[2026-10-21 15:50:23.553] [info] [flexiv::rdk::Robot] Searching for [Enlight-LL-062034] ...
+[2026-10-21 15:50:23.603] [info] [flexiv::rdk::Robot] Connected to the robot
+[2026-10-21 15:50:23.754] [info] [flexiv::rdk::Robot] Validated license: RDK-Professional
+[2026-10-21 15:50:23.754] [info] [flexiv::rdk::Robot] Initialization complete
+[2026-10-21 15:51:24.355] [error] [Event Log] [303010] Unable to generate a feasible trajectory for the commanded non-real-time target.

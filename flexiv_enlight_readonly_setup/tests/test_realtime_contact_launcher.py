@@ -18,8 +18,11 @@ import run_realtime_cartesian_with_contact as launcher
 
 class RealtimeContactLauncherTests(unittest.TestCase):
     def args(self, *extra):
+        # Historical motion options require the historical binary explicitly.
         return launcher.parse_args(["Enlight-LL-654321", "50", "--delta", "0.01", "0", "-0.01",
-                                    "--tilt", "0", "15", "0", "--return-home", *extra])
+                                    "--tilt", "0", "15", "0", "--return-home",
+                                    "--rt-binary", str(ROOT / ".build/realtime-examples/intermediate6_realtime_cartesian_motion_force_control"),
+                                    *extra])
 
     def child(self, pid, poll_values):
         child = Mock(pid=pid)
@@ -41,6 +44,22 @@ class RealtimeContactLauncherTests(unittest.TestCase):
         self.assertNotIn("--contact-rate", command)
         self.assertIn("-0.01", command)
         self.assertEqual(args.contact_rate, 25)
+
+    def test_current_workflow_records_without_changing_the_motion_options(self):
+        args = launcher.parse_args(["Enlight-LL-654321", "--tilt-method", "movel",
+                                   "--tilt-only", "--contact-rate", "20"])
+        command = launcher.motion_command(args)
+        self.assertEqual(Path(command[0]), ROOT / "third_party/flexiv_rdk/example/build/intermediate6_realtime_cartesian_motion_force_control")
+        self.assertEqual(command[1:], ["Enlight-LL-654321", "--tilt-method", "movel",
+                                      "--tilt-only", "--arm", "ARM_1"])
+        self.assertNotIn("--polish", command)
+        self.assertNotIn("--auto-servo-on", command)
+
+    def test_current_binary_preview_rejected_before_any_hardware_process(self):
+        with patch.object(launcher.subprocess, "Popen") as spawn, patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                launcher.main(["Enlight-LL-654321", "--preview"])
+        spawn.assert_not_called()
 
     def test_separator_cannot_hide_arm2(self):
         with patch("sys.stderr"), self.assertRaises(SystemExit):

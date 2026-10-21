@@ -4,8 +4,6 @@ __pycache__/
 .env
 config/robot.env
 docs/SETUP_REPORT.md
-logs/*
-!logs/.gitkeep
 .build/
 .rdk-v2.1/
 .rdk-v2.2/

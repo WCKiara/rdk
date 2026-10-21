@@ -1,9 +1,11 @@
-"""Supervise ARM_1 real-time motion and whole-arm contact CSV recording.
+"""Supervise the current ARM_1 motion example and whole-arm contact CSV recording.
 
 Run this launcher with sudo and the project's Python interpreter. The motion
 child inherits the scheduler privileges; the read-only recorder runs as the
-original sudo user so its CSV remains user-owned. --preview starts only the
-motion program's read-only preview and does not need sudo.
+original sudo user so its CSV remains user-owned. Motion options such as
+--polish, --tilt-method and --tilt-only are forwarded to the motion example.
+--preview is for older binaries that support read-only preview; select those
+explicitly with --rt-binary.
 """
 
 import argparse
@@ -20,7 +22,7 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BINARY = ROOT / ".build/realtime-examples/intermediate6_realtime_cartesian_motion_force_control"
+DEFAULT_BINARY = ROOT / "third_party/flexiv_rdk/example/build/intermediate6_realtime_cartesian_motion_force_control"
 RECORDER = ROOT / "scripts/record_whole_arm_contact.py"
 POLL_PERIOD = 0.05
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -67,11 +69,13 @@ def parse_args(argv=None):
     parser.add_argument("--contact-ready-timeout", type=positive_float, default=15.0)
     parser.add_argument("--rt-binary", type=Path, default=DEFAULT_BINARY)
     parser.add_argument("--preview", action="store_true",
-                        help="Run only the motion program's read-only preview, without recording")
+                        help="Legacy binaries only: run read-only preview without recording; use --rt-binary")
     args, forwarded = parser.parse_known_args(argv)
     if "--" in forwarded:
         parser.error("The '--' separator is unsupported; pass motion options directly")
     args.rt_args = forwarded
+    if args.preview and args.rt_binary == DEFAULT_BINARY:
+        parser.error("The current motion example has no --preview; select a preview-capable legacy --rt-binary")
     return args
 
 

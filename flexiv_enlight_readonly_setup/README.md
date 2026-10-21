@@ -23,6 +23,17 @@ sudo third_party/flexiv_rdk/example/build/intermediate6_realtime_cartesian_motio
 
 Tilt planning prints full-precision `TILT_START`, `TILT_TARGET`, relative angle and starting ARM_1 joints. On a control exception, Stop is attempted first; the program then prints the phase, stop-request outcome, measured state and the same Robot instance's event IDs, descriptions, causes and recommended actions. A rejected Stop request is reported as unconfirmed, and does not replace the original exception. SDK event history is limited to the current connection lifetime. The pre-change source and binary are preserved in `.build/before-tilt-trajectory-fix-20261021/`.
 
+To record ARM_1 whole-arm contact estimates throughout this workflow, use the combined launcher below from the project root. Its default binary is now `third_party/flexiv_rdk/example/build/intermediate6_realtime_cartesian_motion_force_control`, matching the current example, rather than the historical `.build/realtime-examples` binary.
+
+```bash
+sudo .venv/bin/python scripts/run_realtime_cartesian_with_contact.py \
+  '<ACTUAL_FULL_SERIAL>' --arm ARM_1 --contact-rate 20
+```
+
+The recorder must write a valid ARM_1 CSV row before motion starts; it continues during Home, tilt, zeroing, contact search and RT control, and is stopped when the motion process exits, including on failure. A recorder failure interrupts the motion process. Each run uses a new `logs/whole_arm_contact_arm1_<UTC timestamp>.csv`; `CONTACT_RECORDING_READY` prints its absolute path. Rows contain host/robot timestamps, link index, and local-frame 3D contact force/position estimates. These are joint-sensor-based estimates, not tactile skin array readings, and the SDK has no separate enable switch for this readout. See [the data interpretation notes](docs/WHOLE_ARM_CONTACT.md).
+
+Motion flags are forwarded unchanged: add `--polish` for the 5 cm line, or `--tilt-method movel --tilt-only` for just Home and the isolated MoveL tilt. The launcher does not clear robot faults or enable servos automatically. The current example has no `--preview`; legacy preview requires an explicit `--rt-binary`. Combined-process readiness, recording failure and cleanup are checked offline; no new hardware motion or recording was performed to prepare this launcher update.
+
 Build the current target from this project directory:
 
 ```bash
@@ -72,6 +83,7 @@ The requested combined command is:
 
 ```bash
 sudo .venv/bin/python scripts/run_realtime_cartesian_with_contact.py \
+  --rt-binary .build/realtime-examples/intermediate6_realtime_cartesian_motion_force_control \
   '<ACTUAL_FULL_SERIAL>' 50 \
   --arm ARM_1 \
   --delta 0.01 0 -0.01 \
