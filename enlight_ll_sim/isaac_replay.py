@@ -109,11 +109,39 @@ def joint_indices(source_names, simulator_names):
     return [by_name[usd_key(name)] for name in source_names]
 
 
+def set_viewer_camera(stage):
+    """Create a local USD camera without depending on deprecated Core utils."""
+    from omni.kit.viewport.utility import get_active_viewport
+    from pxr import Gf, UsdGeom
+
+    camera_path = "/World/ViewerCamera"
+    camera = UsdGeom.Camera.Define(stage, camera_path)
+    camera.CreateClippingRangeAttr().Set(Gf.Vec2f(0.01, 100.0))
+    transform = Gf.Matrix4d().SetLookAt(
+        Gf.Vec3d(1.6, -1.8, 1.35),
+        Gf.Vec3d(0.0, 0.0, 0.45),
+        Gf.Vec3d(0.0, 0.0, 1.0),
+    ).GetInverse()
+    camera.AddTransformOp().Set(transform)
+    viewport = get_active_viewport()
+    if viewport is not None:
+        viewport.camera_path = camera_path
+
+
 def run_isaac(bundle, motion, urdf_file, once):
     # SimulationApp must exist before importing Omni/Isaac modules.
     from isaacsim import SimulationApp
 
-    simulation_app = SimulationApp({"headless": False})
+    simulation_app = SimulationApp({
+        "headless": False,
+        "width": 960,
+        "height": 540,
+        "extra_args": [
+            "--/isaac/startup/ros_bridge_extension=",
+            "--/isaac/startup/ros_sim_control_extension=false",
+            "--/app/settings/loadUserConfig=false",
+        ],
+    })
     try:
         import numpy as np
         import omni.kit.app
@@ -121,14 +149,26 @@ def run_isaac(bundle, motion, urdf_file, once):
 
         manager = omni.kit.app.get_app().get_extension_manager()
         manager.set_extension_enabled_immediate("isaacsim.asset.importer.urdf", True)
-        manager.set_extension_enabled_immediate("isaacsim.core.api", True)
+        manager.set_extension_enabled_immediate("isaacsim.core.simulation_manager", True)
         simulation_app.update()
 
-        from pxr import UsdGeom
-        from isaacsim.core.api import World
-        from isaacsim.core.api.robots import Robot
-        from isaacsim.core.utils.prims import get_articulation_root_api_prim_path
-        from isaacsim.core.utils.viewports import set_camera_view
+        from pxr import Gf, PhysicsSchemaTools, UsdGeom, UsdLux
+        from isaacsim.core.simulation_manager import SimulationManager
+
+        # 5.1 also ships early experimental APIs, whose lifecycle differs from
+        # 6.0. setup_simulation() identifies the new API without relying on a
+        # VERSION file that may be absent in a Python-package installation.
+        experimental = hasattr(SimulationManager, "setup_simulation")
+        if experimental:
+            manager.set_extension_enabled_immediate("isaacsim.core.experimental.prims", True)
+            manager.set_extension_enabled_immediate("isaacsim.core.rendering_manager", True)
+            from isaacsim.core.experimental.prims import Articulation
+            from isaacsim.core.rendering_manager import RenderingManager
+        else:
+            manager.set_extension_enabled_immediate("isaacsim.core.api", True)
+            from isaacsim.core.api import World
+            from isaacsim.core.api.robots import Robot
+            from isaacsim.core.utils.prims import get_articulation_root_api_prim_path
 
         output_dir = bundle / "isaac_import"
         output_dir.mkdir(exist_ok=True)
@@ -136,30 +176,69 @@ def run_isaac(bundle, motion, urdf_file, once):
         print(f"Imported URDF to {usd_file}", flush=True)
 
         dt = float(motion["dt_s"])
-        world = World(stage_units_in_meters=1.0, physics_dt=dt, rendering_dt=dt)
         stage = omni.usd.get_context().get_stage()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        if experimental:
+            # All assets are local. CPU physics is enough to initialize the
+            # articulation; playback only teleports joints and renders them.
+            SimulationManager.setup_simulation(dt=dt)
+            SimulationManager.set_physics_sim_device("cpu")
+            RenderingManager.set_dt(dt)
+        else:
+            world = World(stage_units_in_meters=1.0, physics_dt=dt, rendering_dt=dt)
         stage.DefinePrim(ROBOT_PRIM, "Xform").GetReferences().AddReference(usd_file.as_posix())
-        articulation_prim = get_articulation_root_api_prim_path(ROBOT_PRIM)
-        robot = world.scene.add(Robot(prim_path=articulation_prim, name="enlight_ll"))
-        world.scene.add_ground_plane(size=4.0, z_position=-0.05)
-        set_camera_view(eye=np.array([1.6, -1.8, 1.35]),
-                        target=np.array([0.0, 0.0, 0.45]))
-        world.reset()
+        if experimental:
+            articulation_prim = Articulation.fetch_articulation_root_api_prim_paths(ROBOT_PRIM)[0]
+            if articulation_prim is None:
+                raise RuntimeError(f"Imported robot has no articulation root below {ROBOT_PRIM}")
+            robot = Articulation(articulation_prim)
+            PhysicsSchemaTools.addGroundPlane(
+                stage, "/World/GroundPlane", "Z", 2.0,
+                Gf.Vec3f(0.0, 0.0, -0.05), Gf.Vec3f(0.5, 0.5, 0.5),
+            )
+            # Manual initialization creates the tensor view while the timeline
+            # stays stopped. RenderingManager.render() never advances physics.
+            SimulationManager.initialize_physics()
+            if not robot.is_physics_tensor_entity_initialized():
+                raise RuntimeError("Isaac Sim did not initialize the offline articulation")
+            fabric = None
+            if manager.is_extension_enabled("omni.physx.fabric"):
+                from omni.physxfabric import get_physx_fabric_interface
+
+                fabric = get_physx_fabric_interface()
+
+            def render():
+                # Copy teleported PhysX poses to Fabric without a physics step,
+                # as the legacy SimulationContext.render() did internally.
+                if fabric is not None:
+                    fabric.force_update(dt, SimulationManager.get_simulation_time())
+                RenderingManager.render()
+        else:
+            articulation_prim = get_articulation_root_api_prim_path(ROBOT_PRIM)
+            robot = world.scene.add(Robot(prim_path=articulation_prim, name="enlight_ll"))
+            world.scene.add_ground_plane(size=4.0, z_position=-0.05)
+            world.reset()
+            render = world.render
+        set_viewer_camera(stage)
+        UsdLux.DomeLight.Define(stage, "/World/ViewerLight").CreateIntensityAttr(700.0)
 
         indices = np.asarray(joint_indices(motion["joint_names"], robot.dof_names), dtype=np.int32)
         frames = np.asarray(motion["positions_rad"], dtype=np.float64)
         times = np.asarray(motion["sample_times_s"], dtype=np.float64)
         print(f"Articulation: {articulation_prim}; mapped {len(indices)} joints", flush=True)
+        print(f"Isaac Core API: {'experimental (6.x)' if experimental else 'legacy (5.1)'}", flush=True)
         print(f"World: Z-up, meters, URDF root at origin; TCP: {motion['tcp_frame']}", flush=True)
 
         def show_pose(q):
             # This is a reference-path viewer: render the teleported joint
             # state without advancing PhysX, so gravity/drives cannot change
             # the commanded pose before it reaches the viewport.
-            robot.set_joint_positions(q, joint_indices=indices)
-            world.render()
+            if experimental:
+                robot.set_dof_positions(q, dof_indices=indices)
+            else:
+                robot.set_joint_positions(q, joint_indices=indices)
+            render()
 
         def hold_pose(q, seconds):
             end = time.monotonic() + seconds

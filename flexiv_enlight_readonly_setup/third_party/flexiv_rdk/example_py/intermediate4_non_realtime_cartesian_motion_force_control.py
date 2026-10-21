@@ -37,7 +37,7 @@ from scipy.spatial.transform import Rotation, Slerp
 DEFAULT_ARM = "ARM_1"
 # 临时软件位置范围：根据本次 ARM_1 当前位置及先前 Home 记录设定，单位 m。
 # 不是厂家推荐范围；更换手臂/工具/场地时，应通过命令行指定实际需要的范围。
-Z_BEFORE_HOME = -0.026941440999507904  # 本次单臂回 Home 前的世界 Z，m。
+Z_BEFORE_HOME = 0  # 本次单臂回 Home 前的世界 Z，m。
 Z_AT_LIMIT_UPDATE = 0.12149951606988907  # 回 Home 后更新限位时只读实测的世界 Z，m。
 Z_MIDPOINT = (Z_BEFORE_HOME + Z_AT_LIMIT_UPDATE) / 2.0  # 两次 Z 的中点，作为固定 Z 下限。
 # 中点只在此次限位设置时计算；不会随以后每次启动时的当前位置重新计算或下移。

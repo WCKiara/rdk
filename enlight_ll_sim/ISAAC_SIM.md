@@ -30,6 +30,22 @@ python E:\desktop\MS\lab\rdk\enlight_ll_sim\isaac_replay.py --bundle E:\desktop\
 
 默认往返循环播放；加 `--once` 则正向播放一次并停在终点，关闭窗口退出。脚本将 URDF 导入 Isaac Sim，在关节名对应后逐帧设置关节角。画面显示的是离线参考轨迹，不运行 Flexiv 控制器，也不向真机发送命令。
 
+## 本机 Ubuntu 启动
+
+本机的安装目录约定为 `/mnt/data/kiara/isaacsim/6.0.0`，使用数据盘保存安装文件和默认缓存。
+
+```bash
+cd /home/kiara/rdk
+./enlight_ll_sim/run_isaac_offline.sh --check-bundle
+./enlight_ll_sim/run_isaac_offline.sh
+```
+
+启动器只运行本目录的离线回放脚本，使用现有本地模型和轨迹，不运行 RDK 控制示例。可以用 `ISAAC_SIM_ROOT` 指定其他安装目录。窗口渲染分辨率为 960×540。
+
+如果 `nvidia-smi` 失败，启动器会停止。本机的 `6.8.1-1058-realtime` 内核无法加载当前 NVIDIA 模块；已安装的 `6.8.0-138-generic` 内核有匹配的 NVIDIA 580.178.04 模块。切换内核需要保存工作并重启，在 GRUB 的 `Advanced options for Ubuntu` 中选择 `Ubuntu, with Linux 6.8.0-138-generic`。
+
+本机 RTX 2080 8 GB 显存、16 GB 内存低于 [Isaac Sim 6.0.0 官方最低配置](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/requirements.html)。这里只准备简单的本地参考轨迹回放，实际运行效果仍需在驱动可用后验证。
+
 ## 坐标对应范围
 
 Isaac Sim 的 `/World/EnlightLL` 放在世界原点，长度单位为米，不额外旋转模型；两臂安装位姿取自同一份 Enlight LL URDF。`motion.json` 的 `world_frame` 为 `world`，位置单位为米，关节角单位为弧度，姿态四元数顺序为 `[qw, qx, qy, qz]`。当前将对应手臂的 `flange` 当作 TCP。
