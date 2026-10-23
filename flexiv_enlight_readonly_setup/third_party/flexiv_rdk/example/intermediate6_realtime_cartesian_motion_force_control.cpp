@@ -9,13 +9,13 @@
  * 1. Home ARM_1, then tilt TCP orientation 15 degrees around WORLD +Y in free space
  *    (relative to the orientation measured after Home()).
  * 2. Zero the force/torque sensor with the TCP already tilted.
- * 3. Search for contact along WORLD -Z.
- * 4. Perform a smooth 5 cm WORLD +Y straight-line TCP motion in 5 seconds,
- *    preserving the desired 15-degree tilt while controlling WORLD Z force.
+ * 3. Move 50 mm along the tilted TCP +Z axis using position control; wait for arrival.
+ * 4. Press toward TCP +Z with 5 N for 6 seconds while retaining the tilt.
+ *    With --polish, also execute a smooth 5 cm WORLD +Y line in 5 seconds.
  *
  * IMPORTANT: This is an example for supervised validation, NOT a validated
  * production safety controller. Check workspace, tool TCP/payload, workpiece,
- * force sign, search range, and collision clearance before any real motion.
+ * force sign, descent distance, and collision clearance before any real motion.
  */
 
 #include <flexiv/rdk/robot.hpp>
@@ -47,7 +47,8 @@ namespace {
 constexpr double kLoopPeriod = 0.001;
 constexpr double kPi = 3.14159265358979323846;
 constexpr auto kControlledArm = rdk::JointGroup::ARM_1;
-enum class TiltMethod { NRT, MOVEL };
+constexpr auto kForceControlFrame = rdk::CoordType::TCP;
+enum class CartesianMethod { NRT, MOVEL };
 using Pose = std::array<double, rdk::kPoseSize>;
 
 struct Diagnostics {
@@ -55,6 +56,9 @@ struct Diagnostics {
     bool has_tilt = false;
     Pose start {}, target {};
     std::vector<double> start_q;
+    bool has_descent = false;
+    Pose descent_start {}, descent_target {};
+    std::vector<double> descent_q;
 };
 
 template <class Values>
@@ -76,6 +80,11 @@ void ReportFailure(rdk::Robot& robot, const Diagnostics& diagnostic, bool stop_r
             spdlog::error("TILT_TARGET xyz_qw_qx_qy_qz={}", PreciseValues(diagnostic.target));
             spdlog::error("TILT_START_ARM_1_Q_RAD={}", PreciseValues(diagnostic.start_q));
         }
+        if (diagnostic.has_descent) {
+            spdlog::error("TCP_Z_MOVE_START xyz_qw_qx_qy_qz={}", PreciseValues(diagnostic.descent_start));
+            spdlog::error("TCP_Z_MOVE_TARGET xyz_qw_qx_qy_qz={}", PreciseValues(diagnostic.descent_target));
+            spdlog::error("TCP_Z_MOVE_START_ARM_1_Q_RAD={}", PreciseValues(diagnostic.descent_q));
+        }
         spdlog::error("FAULT_STATE fault={} status={} mode={} all_stopped={}",
             robot.fault(), static_cast<int>(robot.operational_status()),
             static_cast<int>(robot.mode()), robot.all_stopped());
@@ -89,11 +98,18 @@ void ReportFailure(rdk::Robot& robot, const Diagnostics& diagnostic, bool stop_r
         spdlog::error("Failure state snapshot unavailable: {}", e.what());
     }
     try {
-        // Events are available only for this Robot instance's connection lifetime.
-        for (const auto& event : robot.event_log()) {
+        // The fault flag may arrive before the asynchronous event details. Stop was
+        // already attempted; give an empty queue up to 200 ms to receive the event.
+        auto events = robot.event_log();
+        for (int attempt = 0; events.empty() && attempt < 10; ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            events = robot.event_log();
+        }
+        for (const auto& event : events) {
             spdlog::error("ROBOT_EVENT id={} description={} causes={} actions={}",
                 event.id, event.description, event.probable_causes, event.recommended_actions);
         }
+        if (events.empty()) spdlog::warn("No controller event details received within 200 ms");
     } catch (const std::exception& e) {
         spdlog::error("Robot events unavailable: {}", e.what());
     }
@@ -107,12 +123,13 @@ constexpr double kLineDistance = 0.05;   // m
 constexpr double kLineDuration = 5.0;    // s
 constexpr double kHoldAfterLine = 1.0;  // s
 
-constexpr double kPressingForce = 5.0; // N; WORLD +Fz causes pressing toward -Z.
-constexpr double kContactDetectForce = 3.0; // N
-constexpr double kSearchVelocity = 0.005; // m/s
-constexpr double kSearchDistance = 0.05;  // m; adjust to real geometry
+constexpr double kPressingForce = 5.0; // N; sensed TCP Fz=-5 causes pressing toward TCP +Z.
+constexpr double kDescentVelocity = 0.005; // m/s
+constexpr double kDescentDistance = 0.050; // m; full TCP +Z displacement after tilt/zero
+constexpr double kDescentPositionTolerance = 0.0005; // m; measured arrival tolerance
+constexpr double kDescentAngularTolerance = 0.02; // rad; keep the tilted orientation
 
-const std::array<double, rdk::kCartDoF> kMaxWrenchForContactSearch
+const std::array<double, rdk::kCartDoF> kMaxWrenchForDescent
     = {10.0, 10.0, 10.0, 3.0, 3.0, 3.0};
 
 std::atomic<bool> g_stop_sched {false};
@@ -133,8 +150,24 @@ Eigen::Quaterniond PoseQuaternion(const std::array<double, rdk::kPoseSize>& pose
     }
     // Flexiv ordering: [x, y, z, qw, qx, qy, qz].
     const Eigen::Quaterniond rotation(pose[3], pose[4], pose[5], pose[6]);
-    if (rotation.norm() < 1e-9) throw std::invalid_argument("Invalid zero TCP quaternion");
+    if (!std::isfinite(rotation.norm()) || rotation.norm() < 1e-9) {
+        throw std::invalid_argument("Invalid TCP quaternion norm");
+    }
     return rotation.normalized();
+}
+
+Pose AdvanceAlongTcpPositiveZ(const Pose& start_pose)
+{
+    const auto rotation = PoseQuaternion(start_pose);
+    // Freeze the measured post-tilt TCP axis once; Cartesian SDK targets use WORLD coordinates.
+    const Eigen::Vector3d delta_world = rotation * Eigen::Vector3d(0.0, 0.0, kDescentDistance);
+    auto target = start_pose;
+    for (size_t i = 0; i < 3; ++i) target[i] += delta_world[i];
+    target[3] = rotation.w();
+    target[4] = rotation.x();
+    target[5] = rotation.y();
+    target[6] = rotation.z();
+    return target;
 }
 
 std::array<double, rdk::kPoseSize> TiltPose15DegWorldY(
@@ -153,7 +186,8 @@ std::array<double, rdk::kPoseSize> TiltPose15DegWorldY(
     return result;
 }
 
-rdk::PrimitiveArgs MoveLTiltCommand(const Pose& pose, const std::vector<double>& reference_q)
+rdk::PrimitiveArgs MoveLCommand(
+    const Pose& pose, const std::vector<double>& reference_q, double linear_velocity)
 {
     const auto rotation = PoseQuaternion(pose);
     const auto rpy_deg = rdk::utility::Rad2Deg(rdk::utility::Quat2EulerZYX(
@@ -169,7 +203,7 @@ rdk::PrimitiveArgs MoveLTiltCommand(const Pose& pose, const std::vector<double>&
     // Coord orientation and MoveL angVel use degrees; direct NRT commands use radians.
     const rdk::Coord target({pose[0], pose[1], pose[2]}, rpy_deg,
         {"WORLD", "WORLD_ORIGIN"}, reference_deg);
-    rdk::PrimitiveArgs command("MoveL", {{"target", target}, {"vel", 0.01},
+    rdk::PrimitiveArgs command("MoveL", {{"target", target}, {"vel", linear_velocity},
         {"angVel", rdk::utility::Rad2Deg(0.10)}, {"acc", 0.10},
         {"zoneRadius", std::string("ZFine")}});
     command.external_axis_control = false;
@@ -184,14 +218,22 @@ void PrintHelp()
     std::cout << "Required: [robot_sn]\n"
               << "Optional: [--arm ARM_1] [--TCP] [--polish] [--auto-servo-on]\n"
               << "          [--tilt-method nrt|movel] [--tilt-only]\n"
+              << "          [--descent-method nrt|movel]\n"
               << "  All motion targets, including startup Home, address ARM_1 only.\n"
               << "  --arm: only ARM_1 is accepted; this is also the default.\n"
-              << "  --TCP: force-control along local TCP Z instead of WORLD Z.\n"
+              << "  Tilt: +15 deg about WORLD Y relative to the post-Home orientation.\n"
+              << "  Move: tilted TCP +Z by 50.0 mm at 5.0 mm/s, then wait for arrival.\n"
+              << "        p_goal = p_start + R_world_tcp(start) * [0, 0, 0.050] m.\n"
+              << "        Position tolerance: 0.5 mm; force does not end this move early.\n"
+              << "  Press: TCP +Z, 5.0 N (SDK sensed-force target TCP Fz=-5 N).\n"
+              << "  Force control is fixed to TCP; --TCP explicitly selects the default.\n"
               << "  --polish: execute the 5 cm WORLD +Y line after 15-degree tilt;\n"
-              << "            otherwise hold position for the same duration.\n"
-              << "  Startup includes ARM_1 Home, F/T zeroing and contact search.\n"
+              << "            otherwise hold the motion-controlled axes and orientation for 6 s.\n"
+              << "  Startup includes ARM_1 Home, tilt, F/T zeroing and the 50 mm move.\n"
               << "  --tilt-method: initial tilt planner, default nrt; movel uses MoveL.\n"
-              << "  --tilt-only: Home ARM_1, tilt, Stop and exit before zero/search/RT.\n"
+              << "  --descent-method: independent 50 mm descent planner, default nrt.\n"
+              << "                    movel sends one MoveL; no automatic fallback/retry.\n"
+              << "  --tilt-only: Home ARM_1, tilt, Stop and exit before zero/descent/RT.\n"
               << "  --auto-servo-on: permit robot-wide ServoOn if not enabled;\n"
               << "                   this may release both arms' brakes.\n"
               << "  Without --auto-servo-on the robot must already be operational.\n";
@@ -200,7 +242,6 @@ void PrintHelp()
 void PeriodicTask(
     rdk::Robot& robot,
     const std::array<double, rdk::kPoseSize>& arm1_init_pose,
-    rdk::CoordType force_ctrl_frame,
     bool enable_polish)
 {
     static uint64_t loop_counter = 0;
@@ -210,17 +251,17 @@ void PeriodicTask(
         }
 
         const double t = loop_counter * kLoopPeriod;
-        const double Fz = (force_ctrl_frame == rdk::CoordType::WORLD)
-            ? kPressingForce : -kPressingForce;
+        // RDK commands the reaction sensed at the TCP: -TCP Fz presses toward TCP +Z.
         const std::array<double, rdk::kCartDoF> target_wrench
-            = {0.0, 0.0, Fz, 0.0, 0.0, 0.0};
+            = {0.0, 0.0, -kPressingForce, 0.0, 0.0, 0.0};
 
         auto target_pose = arm1_init_pose;
         if (enable_polish) {
             target_pose[1] = arm1_init_pose[1]
                 + kLineDistance * Smoothstep5(t / kLineDuration);
         }
-        // Orientation stays fixed; Z is force-controlled rather than position-tracked.
+        // Orientation stays fixed; local TCP Z is force-controlled. The force controller
+        // may adjust WORLD X/Y/Z along that tilted axis to track the pressing force.
         const std::map<rdk::JointGroup, rdk::RtCartesianCmd> rt_cmds {
             {kControlledArm, rdk::RtCartesianCmd(target_pose, target_wrench)}};
 
@@ -249,14 +290,14 @@ int main(int argc, char* argv[])
         bool enable_polish = false;
         bool auto_servo_on = false;
         bool tilt_only = false;
-        auto tilt_method = TiltMethod::NRT;
-        auto force_ctrl_frame = rdk::CoordType::WORLD;
+        auto tilt_method = CartesianMethod::NRT;
+        auto descent_method = CartesianMethod::NRT;
         for (int i = 2; i < argc; ++i) {
             const std::string argument = argv[i];
             if (argument == "--polish") {
                 enable_polish = true;
             } else if (argument == "--TCP") {
-                force_ctrl_frame = rdk::CoordType::TCP;
+                // TCP force control is already the fixed default for this workflow.
             } else if (argument == "--auto-servo-on") {
                 auto_servo_on = true;
             } else if (argument == "--tilt-only") {
@@ -264,9 +305,15 @@ int main(int argc, char* argv[])
             } else if (argument == "--tilt-method") {
                 if (++i >= argc) throw std::invalid_argument("Missing --tilt-method value");
                 const std::string method = argv[i];
-                if (method == "nrt") tilt_method = TiltMethod::NRT;
-                else if (method == "movel") tilt_method = TiltMethod::MOVEL;
+                if (method == "nrt") tilt_method = CartesianMethod::NRT;
+                else if (method == "movel") tilt_method = CartesianMethod::MOVEL;
                 else throw std::invalid_argument("--tilt-method accepts nrt or movel");
+            } else if (argument == "--descent-method") {
+                if (++i >= argc) throw std::invalid_argument("Missing --descent-method value");
+                const std::string method = argv[i];
+                if (method == "nrt") descent_method = CartesianMethod::NRT;
+                else if (method == "movel") descent_method = CartesianMethod::MOVEL;
+                else throw std::invalid_argument("--descent-method accepts nrt or movel");
             } else if (argument == "--arm") {
                 if (++i >= argc || std::string(argv[i]) != "ARM_1") {
                     throw std::invalid_argument("Only --arm ARM_1 is supported");
@@ -314,7 +361,8 @@ int main(int argc, char* argv[])
             }
         }
         if (g_sigint_requested) throw std::runtime_error("User interrupted");
-        spdlog::info("ARM_1 only: Home, 15-degree tilt, contact search and RT control");
+        spdlog::info("ARM_1 only: Home; tilt WORLD +Y {:.1f} deg; move TCP +Z {:.1f} mm; press TCP +Z {:.1f} N",
+            kTiltAngleDegrees, kDescentDistance * 1000.0, kPressingForce);
         diagnostic.phase = "home";
         robot.Home({kControlledArm});
 
@@ -328,14 +376,14 @@ int main(int argc, char* argv[])
         const double tilt_degrees = rdk::utility::Rad2Deg(
             PoseQuaternion(diagnostic.start).angularDistance(PoseQuaternion(diagnostic.target)));
         spdlog::info("TILT_PLAN method={} delta_deg={:.9f} position_delta_m=0",
-            tilt_method == TiltMethod::MOVEL ? "movel" : "nrt", tilt_degrees);
+            tilt_method == CartesianMethod::MOVEL ? "movel" : "nrt", tilt_degrees);
         spdlog::info("TILT_START xyz_qw_qx_qy_qz={}", PreciseValues(diagnostic.start));
         spdlog::info("TILT_TARGET xyz_qw_qx_qy_qz={}", PreciseValues(diagnostic.target));
         spdlog::info("TILT_START_ARM_1_Q_RAD={}", PreciseValues(diagnostic.start_q));
         std::map<rdk::JointGroup, std::array<double, rdk::kPoseSize>> tilted_target_poses;
         tilted_target_poses[kControlledArm] = diagnostic.target;
-        if (tilt_method == TiltMethod::MOVEL) {
-            const auto command = MoveLTiltCommand(diagnostic.target, after_home.q);
+        if (tilt_method == CartesianMethod::MOVEL) {
+            const auto command = MoveLCommand(diagnostic.target, after_home.q, 0.01);
             diagnostic.phase = "tilt_movel_submit";
             robot.SwitchMode(rdk::Mode::NRT_PRIMITIVE_EXECUTION);
             robot.ExecutePrimitive({{kControlledArm, command}});
@@ -345,7 +393,7 @@ int main(int argc, char* argv[])
             robot.SendCartesianMotionForce({{kControlledArm, rdk::NrtCartesianCmd(
                 diagnostic.target, {}, {}, 0.01, 0.10, 0.05, 0.30)}});
         }
-        diagnostic.phase = tilt_method == TiltMethod::MOVEL ? "tilt_movel_wait" : "tilt_nrt_wait";
+        diagnostic.phase = tilt_method == CartesianMethod::MOVEL ? "tilt_movel_wait" : "tilt_nrt_wait";
 
         const auto tilt_deadline
             = std::chrono::steady_clock::now() + std::chrono::seconds(15);
@@ -366,7 +414,7 @@ int main(int argc, char* argv[])
                     all_reached = false;
                 }
             }
-            if (tilt_method == TiltMethod::MOVEL) {
+            if (tilt_method == CartesianMethod::MOVEL) {
                 const auto primitive_states = robot.primitive_states();
                 const auto arm1 = primitive_states.find(kControlledArm);
                 const bool correct_primitive = arm1 != primitive_states.end()
@@ -389,7 +437,7 @@ int main(int argc, char* argv[])
         if (tilt_only) {
             diagnostic.phase = "tilt_only_stop";
             robot.Stop();
-            spdlog::info("ARM_1 tilt-only complete; no F/T zeroing, contact search or RT line started");
+            spdlog::info("ARM_1 tilt-only complete; no F/T zeroing, Z descent or RT pressing started");
             return 0;
         }
 
@@ -421,66 +469,125 @@ int main(int argc, char* argv[])
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
 
-        // Phase 3: approach contact with the already tilted TCP orientation.
-        diagnostic.phase = "contact_search";
+        // Phase 3: complete the fixed, post-tilt TCP +Z position move before force control.
+        diagnostic.phase = "tcp_z_descent";
         std::map<rdk::JointGroup, std::array<double, rdk::kPoseSize>> all_init_pose;
         const auto states_after_zero = robot.states();
         for (const auto& [group, _] : controlled_groups) {
             all_init_pose[group] = states_after_zero.at(group).tcp_pose;
         }
-        robot.SwitchMode(rdk::Mode::NRT_CARTESIAN_MOTION_FORCE);
-        for (const auto& [group, _] : controlled_groups) {
-            robot.SetMaxContactWrench(group, kMaxWrenchForContactSearch);
-        }
-        std::map<rdk::JointGroup, rdk::NrtCartesianCmd> search_cmds;
+        std::map<rdk::JointGroup, rdk::NrtCartesianCmd> descent_cmds;
         for (const auto& [group, start_pose] : all_init_pose) {
-            auto search_pose = start_pose;
-            search_pose[2] -= kSearchDistance;
-            search_cmds[group] = rdk::NrtCartesianCmd(
-                search_pose, {}, {}, kSearchVelocity);
+            const auto descent_pose = AdvanceAlongTcpPositiveZ(start_pose);
+            descent_cmds[group] = rdk::NrtCartesianCmd(
+                descent_pose, {}, {}, kDescentVelocity);
+            spdlog::info("TCP_Z_MOVE_START xyz_qw_qx_qy_qz={}", PreciseValues(start_pose));
+            spdlog::info("TCP_Z_MOVE_TARGET xyz_qw_qx_qy_qz={}", PreciseValues(descent_pose));
+            const std::array<double, 3> world_delta = {descent_pose[0] - start_pose[0],
+                descent_pose[1] - start_pose[1], descent_pose[2] - start_pose[2]};
+            spdlog::info("TCP_Z_MOVE_WORLD_DELTA_M={}", PreciseValues(world_delta));
         }
-        robot.SendCartesianMotionForce(search_cmds);
-        spdlog::info("Searching contact, max travel {} m at {} m/s",
-            kSearchDistance, kSearchVelocity);
+        diagnostic.descent_start = all_init_pose.at(kControlledArm);
+        diagnostic.descent_target = descent_cmds.at(kControlledArm).pose_d;
+        diagnostic.descent_q = states_after_zero.at(kControlledArm).q;
+        diagnostic.has_descent = true;
+        if (descent_method == CartesianMethod::MOVEL) {
+            const auto command = MoveLCommand(
+                diagnostic.descent_target, diagnostic.descent_q, kDescentVelocity);
+            diagnostic.phase = "tcp_z_descent_movel_submit";
+            robot.SwitchMode(rdk::Mode::NRT_PRIMITIVE_EXECUTION);
+            robot.ExecutePrimitive({{kControlledArm, command}});
+        } else {
+            diagnostic.phase = "tcp_z_descent_nrt_submit";
+            robot.SwitchMode(rdk::Mode::NRT_CARTESIAN_MOTION_FORCE);
+            robot.SetMaxContactWrench(kControlledArm, kMaxWrenchForDescent);
+            robot.SetForceControlAxis(kControlledArm, {});
+            robot.SendCartesianMotionForce(descent_cmds);
+        }
+        diagnostic.phase = descent_method == CartesianMethod::MOVEL
+            ? "tcp_z_descent_movel_wait" : "tcp_z_descent_nrt_wait";
+        spdlog::info("Moving TCP +Z by {:.1f} mm at {:.1f} mm/s with {}; waiting for position arrival and ARM_1 stop",
+            kDescentDistance * 1000.0, kDescentVelocity * 1000.0,
+            descent_method == CartesianMethod::MOVEL ? "MoveL" : "direct NRT");
 
-        bool is_contacted = false;
-        const auto contact_deadline
+        const auto descent_deadline
             = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!is_contacted) {
-            if (robot.fault() || g_sigint_requested
-                || std::chrono::steady_clock::now() > contact_deadline) {
-                throw std::runtime_error("Contact not found within safe search window");
+        while (true) {
+            if (robot.fault() || g_sigint_requested) {
+                throw std::runtime_error("TCP +Z position move interrupted or robot fault; RT pressing was not started");
             }
             const auto states = robot.states();
+            const auto stopped_groups = robot.stopped();
+            bool all_reached = true;
             for (const auto& [group, _] : controlled_groups) {
                 const auto& measured = states.at(group);
-                const Eigen::Vector3d ext_force(
-                    measured.tcp_wrench[0], measured.tcp_wrench[1], measured.tcp_wrench[2]);
-                if (ext_force.norm() > kContactDetectForce) {
-                    is_contacted = true;
-                    spdlog::info("[{}] Contact detected", rdk::kJointGroupNames.at(group));
-                    break;
+                const auto& current = measured.tcp_pose;
+                const auto& target = descent_cmds.at(group).pose_d;
+                const auto current_rotation = PoseQuaternion(current);
+                // MoveL does not expose SetMaxContactWrench in primitive mode.
+                // Monitor the same finite component limits on the host for both methods.
+                for (size_t axis = 0; axis < measured.tcp_wrench.size(); ++axis) {
+                    if (!std::isfinite(measured.tcp_wrench[axis])) {
+                        throw std::runtime_error("Non-finite WORLD wrench during descent");
+                    }
+                    if (std::abs(measured.tcp_wrench[axis]) > kMaxWrenchForDescent[axis]) {
+                        throw std::runtime_error("WORLD contact-wrench limit exceeded during descent");
+                    }
                 }
+                const Eigen::Vector3d current_position(current[0], current[1], current[2]);
+                const Eigen::Vector3d target_position(target[0], target[1], target[2]);
+                const bool arm_stopped = stopped_groups.contains(group) && stopped_groups.at(group);
+                if ((current_position - target_position).norm() > kDescentPositionTolerance
+                    || current_rotation.angularDistance(PoseQuaternion(target)) > kDescentAngularTolerance
+                    || !arm_stopped) {
+                    all_reached = false;
+                }
+            }
+            if (descent_method == CartesianMethod::MOVEL) {
+                const auto primitive_states = robot.primitive_states();
+                const auto arm1 = primitive_states.find(kControlledArm);
+                const bool correct_primitive = arm1 != primitive_states.end()
+                    && arm1->second.pt_name == "MoveL";
+                const bool reached = correct_primitive
+                    && rdk::utility::PrimitiveStateTrue(arm1->second, "reachedTarget");
+                if (correct_primitive && !reached
+                    && rdk::utility::PrimitiveStateTrue(arm1->second, "terminated")) {
+                    throw std::runtime_error("ARM_1 descent MoveL terminated without reachedTarget");
+                }
+                all_reached = all_reached && reached;
+            }
+            if (all_reached) {
+                const auto& measured = states.at(kControlledArm);
+                const auto& start_pose = all_init_pose.at(kControlledArm);
+                const Eigen::Vector3d displacement_world(measured.tcp_pose[0] - start_pose[0],
+                    measured.tcp_pose[1] - start_pose[1], measured.tcp_pose[2] - start_pose[2]);
+                const auto displacement_tcp = PoseQuaternion(start_pose).conjugate() * displacement_world;
+                spdlog::info("TCP +Z move reached: axial displacement={:.3f} mm, sensed TCP Fz={:.3f} N; starting TCP +Z 5.0 N pressing",
+                    displacement_tcp.z() * 1000.0, measured.tcp_wrench_local[2]);
+                break;
+            }
+            if (std::chrono::steady_clock::now() > descent_deadline) {
+                throw std::runtime_error("50.0 mm TCP +Z position target not reached before timeout; RT pressing was not started");
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
-        // Phase 4: retain tilted quaternion and execute RT motion + Z force.
+        // Phase 4: retain the post-tilt TCP orientation and execute RT motion + local Z force.
         diagnostic.phase = "rt_motion_force";
         robot.SwitchMode(rdk::Mode::RT_CARTESIAN_MOTION_FORCE);
         for (const auto& [group, _] : controlled_groups) {
-            robot.SetForceControlFrame(group, force_ctrl_frame);
+            robot.SetForceControlFrame(group, kForceControlFrame);
             robot.SetForceControlAxis(group,
                 std::array<bool, rdk::kCartDoF>{false, false, true, false, false, false});
         }
-        // Deliberately KEEP finite contact-wrench limits instead of disabling them
-        // with infinity as in the example. Validate these limits for your setup.
+        // Reapply finite contact-wrench limits after the control mode transition.
+        robot.SetMaxContactWrench(kControlledArm, kMaxWrenchForDescent);
 
-        const auto states_at_contact = robot.states();
+        const auto states_after_descent = robot.states();
         for (auto& [group, pose] : all_init_pose) {
-            pose = states_at_contact.at(group).tcp_pose;
-            // Force the rotation setpoint to remain EXACTLY the tilt target.
-            const auto& angle_goal = tilted_target_poses.at(group);
+            pose = states_after_descent.at(group).tcp_pose;
+            // Keep the same captured orientation used to define the TCP +Z position move.
+            const auto& angle_goal = descent_cmds.at(group).pose_d;
             for (size_t i = 3; i < 7; ++i) pose[i] = angle_goal[i];
         }
 
@@ -488,7 +595,7 @@ int main(int argc, char* argv[])
         rdk::Scheduler scheduler;
         scheduler.AddTask(std::bind(PeriodicTask, std::ref(robot),
                               std::cref(all_init_pose.at(kControlledArm)),
-                              force_ctrl_frame, enable_polish),
+                              enable_polish),
             "HP periodic", 1, scheduler.max_priority());
         scheduler.Start();
         while (!g_stop_sched && !g_sigint_requested) {
@@ -498,7 +605,7 @@ int main(int argc, char* argv[])
         robot.Stop();
         spdlog::info("Motion terminated; robot switched to IDLE");
         } catch (...) {
-            // Exception-safe stop, also for interrupted NRT/contact phases.
+            // Exception-safe stop, also for interrupted tilt/descent phases.
             bool stop_returned = false;
             try {
                 robot.Stop();

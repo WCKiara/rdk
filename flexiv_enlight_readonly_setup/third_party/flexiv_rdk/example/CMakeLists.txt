@@ -41,6 +41,8 @@ if(CMAKE_HOST_UNIX)
     intermediate4_realtime_joint_floating
     intermediate5_realtime_cartesian_pure_motion_control
     intermediate6_realtime_cartesian_motion_force_control
+    arm1_tcp_tilt_force
+    arm1_joint_floating_arm2_hold
   )
 endif()
 

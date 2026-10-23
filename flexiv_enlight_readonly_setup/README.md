@@ -4,24 +4,129 @@ Originally prepared for state observation with the official Flexiv RDK. This pro
 
 Whole-arm contact estimates can be read and recorded with `scripts/record_whole_arm_contact.py`; see [the data and usage notes](docs/WHOLE_ARM_CONTACT.md).
 
+## ARM_1 local TCP tilt and constant force, ARM_2 explicit hold
+
+[`arm1_tcp_tilt_force.cpp`](third_party/flexiv_rdk/example/arm1_tcp_tilt_force.cpp) executes **ARM_1 Home → local TCP X +15° tilt → TCP +Z target force 5 N for 6 seconds**. The tilt axis/angle and force/duration are configurable. Tilt starts from ARM_1's measured post-Home TCP pose.
+
+The operator clarified on 2026-10-22 that ARM_2 hold means including its hold command with each ARM_1 motion command:
+
+- Startup sends one primitive map `{ARM_1: Home, ARM_2: Hold}`, with external-axis control and synchronized motion disabled. These are the controller's standard [Home and Hold primitives](https://www.flexiv.com/software/primitives/en/3E.1/enlight/Workflow.html).
+- Each 1000 Hz `StreamCartesianMotionForce` call sends both ARM_1's target and ARM_2's fixed startup TCP pose with zero wrench. This applies throughout tilt, the transition to force control and the force phase. ARM_2 has all force axes disabled and its startup joints as the null-space reference; its hold target is never recaptured.
+- No application abort checks are added for ARM_2 joint/pose drift, WORLD TCP boxes, measured wrench, force tracking/contact loss, force-stage travel, stale state timestamps or a 20 ms callback heartbeat. The earlier `ARM_2 hold joint drift exceeded 0.001 rad` trigger has been removed. The task does not set extra contact-wrench limits. SDK-reported faults/exceptions, task completion timeouts and interruption handling remain; shutdown joins the callback before calling robot-wide `Stop()`.
+
+`--x 15` is the default. Use `--x -15`, `--y 15` or `--z 15` to change it; negative values use one minus. The tool-relative rotation is `q_goal = q_post_home * q_axis(angle)`, with unchanged position. The smooth quintic tilt lasts at least `--tilt-duration 5` seconds, extended to keep its planned angular velocity/acceleration within 0.15 rad/s and 0.3 rad/s². After the trajectory finishes, arrival within 1 mm / 1 degree starts force control; failure to arrive within the extra `--finish-timeout 3` seconds ends the task.
+
+`--force 5` means pressing toward TCP +Z. RDK commands the opposite sensed reaction, so the local wrench target is `[0,0,-5,0,0,0]`; see the [RDK v2.1 convention](https://www.flexiv.com/software/rdk/api/v2.1/classflexiv_1_1rdk_1_1_robot.html). Only ARM_1 TCP Z uses active force control; its other axes retain the tilted pose target. This constant target is streamed for `--force-duration 6` seconds from the first force packet, without waiting for a measured-force settling condition. The SDK force-axis velocity setting is `--force-velocity 0.005` m/s. `--force -5` reverses the direction. At the force deadline, no additional force packet is sent. Completion requires the callback to exit, robot-wide `Stop()` to return, and the robot to remain READY, fault-free, IDLE and all-stopped for 0.2 seconds. SDK IDLE holds the stopped position; the program does not command a return to the pre-force TCP pose. `STOP_CONFIRMED` and `FORCE_TASK_COMPLETE IDLE_POSITION_HOLD` report this confirmation. Measured force accuracy and a mechanical brake lock are not established by this check.
+
+`--stop-timeout 3` sets the confirmation budget after the blocking SDK `Stop()` returns; it must exceed 0.2 seconds. It does not impose a timeout on `Stop()` itself. A rejected Stop, lost connection, fault or unconfirmed IDLE/stopped state produces `STOP_UNCONFIRMED` and a failure exit. Interruptions and control errors use the same cleanup, preserving the original error. These checks observe controller status and do not establish a zero physical displacement or a guaranteed stopping distance under load. The force axes are not left active with a zero force target, which would not provide a position hold.
+
+Start READY, IDLE and stopped. Home has `--home-timeout 60`; scheduler readiness has `--startup-timeout 10`. No automatic ServoOn, fault recovery, F/T zeroing or programmed approach move is included.
+
+Build and run from this project directory:
+
+```bash
+cmake -S third_party/flexiv_rdk/example -B .build/tcp-tilt-force \
+  -Dflexiv_rdk_DIR="$PWD/.rdk-v2.1/lib/cmake/flexiv_rdk"
+cmake --build .build/tcp-tilt-force --target arm1_tcp_tilt_force --parallel 2
+sudo .build/tcp-tilt-force/arm1_tcp_tilt_force \
+  '<ACTUAL_FULL_SERIAL>' --x 15 --force 5 --force-duration 6
+```
+
+`--preview` reads the current pose only, without Home or writes; its printed plan is a current-pose reference. `--tilt-only` still performs ARM_1 Home and tilt with ARM_2 hold, then stops before force control. `--help` needs no connection.
+
+The executable is built against the local official RDK v2.1 runtime. Offline tests use an in-memory Robot and ordinary-thread Scheduler, checking every Home/RT command for the paired ARM_2 hold, the post-Home tilt origin, force sign, SDK failure/interrupt handling, and continued command output when the removed application thresholds would previously have aborted. No hardware was connected or actuated while preparing this update. The previous source, tests, README and binary are preserved in `.build/before-hold-simplification-20261022/`.
+
+```bash
+c++ -std=c++20 -O1 -Wall -Wextra -Wpedantic -pthread \
+  -Itests/fake_tilt_force_rdk -Itests/fake_rdk \
+  -Ithird_party/flexiv_rdk/include -I/usr/include/eigen3 \
+  tests/arm1_tcp_tilt_force_test.cpp -o .build/arm1_tcp_tilt_force_test
+.build/arm1_tcp_tilt_force_test
+```
+
+## Joint floating and stop into position hold
+
+[`intermediate4_realtime_joint_floating.cpp`](third_party/flexiv_rdk/example/intermediate4_realtime_joint_floating.cpp) now uses joint damping `{5, 5, 2.5, 2.5, 0.5, 0.5, 0.5}`, half the original values, with gravity compensation and soft joint limits. It applies `tau[i] = -kFloatingDamping[i] * dtheta[i]` in `RT_JOINT_TORQUE`, requiring AUTO (Remote). These gains have units Nm*s/rad and apply only while this example is running; they do not configure Elements Manual/Auto freedrive, the `FloatingJoint` primitive, or the Cartesian controller in `arm1_tcp_tilt_force`. Damping opposes velocity during floating; it does not hold a fixed position after an external force is removed.
+
+Ctrl+C, SIGTERM and SIGHUP now stop the floating callback, join the scheduler and call robot-wide `Stop()`. Callback errors and startup failures after control begins also attempt Stop. The shared confirmation in [`stop_and_confirm.hpp`](third_party/flexiv_rdk/example/stop_and_confirm.hpp) checks READY, fault-free IDLE and all-stopped continuously for 0.2 seconds before reporting `STOP_CONFIRMED`. IDLE uses the controller's position hold. Ctrl+C returns status 130 after cleanup. This example retains its existing startup ServoOn and Home for all available arms; this change does not restrict floating to ARM_1.
+
+Build the updated floating executable in the same local RDK v2.1 build directory:
+
+```bash
+cmake --build .build/tcp-tilt-force --target intermediate4_realtime_joint_floating --parallel 2
+```
+
+Offline regression tests exercise unchanged damping torques, interrupt/fault cleanup, callback completion before Stop, failures to confirm stopped IDLE, transient stopped reports and the force deadline. Both examples are compiled against the real local SDK. No hardware was connected or actuated for these changes; physical smoothness and position holding remain to be verified on the robot. Previous files and available binaries are preserved in `.build/before-stop-hold-20261022/`.
+
+```bash
+c++ -std=c++20 -O1 -Wall -Wextra -Wpedantic -pthread \
+  -Itests/fake_tilt_force_rdk -Itests/fake_rdk \
+  -Ithird_party/flexiv_rdk/include -I/usr/include/eigen3 \
+  tests/joint_floating_stop_test.cpp -o .build/joint_floating_stop_test
+.build/joint_floating_stop_test
+```
+
+## ARM_1 native floating with ARM_2 Hold
+
+Use [`arm1_joint_floating_arm2_hold.cpp`](third_party/flexiv_rdk/example/arm1_joint_floating_arm2_hold.cpp) for the requested ARM_1-only workflow. It stays in `NRT_PRIMITIVE_EXECUTION` and sends `{ARM_1: Home, ARM_2: Hold}`, waits for ARM_1 arrival and all-stopped, then sends `{ARM_1: FloatingJoint, ARM_2: Hold}`. Both command maps disable external-axis control and synchronized motion. The monitor requires ARM_2's Hold to remain active; loss or termination of Hold triggers a robot-wide Stop attempt. It never requests ARM_2 Home or floating. An active Hold is controller position control, not a mechanical brake lock.
+
+This entry uses the native `FloatingJoint` parameter `dampingLevel`, a dimensionless seven-element vector in [0,100], default all zero as selected by the user. It has no established numerical conversion from the RT example's `kFloatingDamping`. Changing that RT constant will not change this entry. `maxVel` defaults to 0.2 m/s, the documented lower bound; the native inertia, friction compensation and response-torque settings retain controller defaults. Sources: [Enlight 3E.1 native floating parameters](https://www.flexiv.com/software/primitives/en/3E.1/enlight/Zero%20Gravity%20Floating.html#floatingjoint), [Hold description](https://www.flexiv.com/software/primitives/en/3E.1/enlight/Workflow.html#hold). The default native response threshold does not establish rigid position holding whenever the hand stops pushing.
+
+Start AUTO (Remote), fault-free, READY, IDLE and stopped. `--auto-servo-on` explicitly permits one ServoOn only from NOT_SERVO_ON; ordinary AUTO and Manual are rejected. This entry has no automatic fault clearing and needs no RT scheduler or sudo. After a normal end, interruption or error, it calls the shared Stop/IDLE confirmation. `--duration 0` (default) waits for Ctrl+C or primitive termination. `--preview` reads state and prints the intended commands without writes.
+
+For hand guiding from the current stopped position, add `--skip-home`. This sends only `{ARM_1: FloatingJoint, ARM_2: Hold}` and executes no Home primitive. Stop the preceding control program first, then run:
+
+```bash
+.build/tcp-tilt-force/arm1_joint_floating_arm2_hold Enlight-LL-062034 --skip-home
+```
+
+Ctrl+C stops floating and confirms IDLE position hold. The default native damping levels remain all zero. The offline regression checks that `--skip-home` issues no Home command and pairs ARM_2 Hold with ARM_1 FloatingJoint.
+
+From the project root, build and run:
+
+```bash
+cmake --build .build/tcp-tilt-force --target arm1_joint_floating_arm2_hold --parallel 2
+.build/tcp-tilt-force/arm1_joint_floating_arm2_hold Enlight-LL-062034 \
+  --damping-level 0 0 0 0 0 0 0 --arm ARM_1
+```
+
+This command first moves ARM_1 to Home while ARM_2 receives Hold, then enables ARM_1 floating. The real-SDK build and offline tests passed, including paired commands, default levels, readiness rejection, Home and Hold failures, interruption and stop confirmation. The preparation included a read-only robot-state check; Home and floating have not been executed for this entry. The earlier RT example and available binary were preserved in `.build/before-arm1-floating-hold-20261022/`.
+
+```bash
+c++ -std=c++20 -O1 -Wall -Wextra -Wpedantic -pthread \
+  -Itests/fake_floating_rdk -Ithird_party/flexiv_rdk/include -I/usr/include/eigen3 \
+  tests/arm1_joint_floating_hold_test.cpp -o .build/arm1_joint_floating_hold_test
+.build/arm1_joint_floating_hold_test
+```
+
 ## Current intermediate6: ARM_1 polishing
 
-As of 2026-10-21, the current `third_party/flexiv_rdk/example/intermediate6_realtime_cartesian_motion_force_control.cpp` explicitly addresses only `ARM_1` for startup Home, the 15-degree WORLD +Y tilt, F/T zeroing, WORLD -Z contact search, per-arm force settings and real-time targets. It accepts an Enlight dual-arm robot when `ARM_1` exists. An absent `ARM_1` is rejected before control requests; `--arm ARM_2`, other arm values and unknown arguments are rejected before connection. Zeroing waits for `ARM_1`'s own completion state.
+As of 2026-10-22, the current `third_party/flexiv_rdk/example/intermediate6_realtime_cartesian_motion_force_control.cpp` explicitly addresses only `ARM_1` for startup Home, the 15-degree WORLD +Y tilt, F/T zeroing, the 50 mm TCP +Z position move, per-arm force settings and real-time targets. It accepts an Enlight dual-arm robot when `ARM_1` exists. An absent `ARM_1` is rejected before control requests; `--arm ARM_2`, other arm values and unknown arguments are rejected before connection. Zeroing waits for `ARM_1`'s own completion state.
+
+The requested sequence is fixed to: end-effector tilt **+15 degrees around WORLD Y**, relative to its post-Home orientation; complete a **50.0 mm TCP +Z position move** at 5.0 mm/s; then press **TCP +Z with 5.0 N** in `RT_CARTESIAN_MOTION_FORCE` for 6 seconds. The operator confirmed movement and pressing in the same tool-axis direction and selected TCP +Z as the physical downward direction for the logged posture. Force control is fixed to TCP; `--TCP` is accepted as an explicit selection of this default. The SDK commands the reaction force sensed at the TCP, so TCP +Z pressing uses the local wrench target `[0, 0, -5, 0, 0, 0]`; see the [RDK force convention](https://www.flexiv.com/software/rdk/api/v2.1/classflexiv_1_1rdk_1_1_robot.html).
+
+The TCP axis is captured once from the measured pose after tilt and F/T zeroing. The WORLD target is `p_goal = p_start + R_world_tcp(start) * [0, 0, 0.050]`; its orientation stays equal to that captured TCP orientation during the position move and later pressing. This advances 50 mm along the tool axis and can change all three WORLD position components. For the operator's logged post-zero pose, TCP +Z gives approximately WORLD displacement `[-12.7832, -0.0011, -48.3383] mm`; TCP -Z would instead move upward. These values describe that logged posture, not live telemetry or every possible TCP orientation.
+
+All six axes use position control during the 50 mm move. It must reach the target within 0.5 mm and the captured orientation within 0.02 rad, and ARM_1 must report stopped, before force control starts. Measured contact force does not end the position move early. A fault, interruption, invalid pose/wrench or failure to reach the target within 20 seconds causes a Stop attempt and failure exit before RT pressing. A host monitor aborts descent if any measured WORLD force component exceeds 10 N or any moment component exceeds 3 Nm. Direct NRT descent also uses the SDK's finite contact-wrench limits, and these limits are reapplied in RT mode. The host monitor is distinct from the controller's soft wrench regulation, which is unavailable through `SetMaxContactWrench` in primitive mode. During pressing, local TCP Z is force-controlled and may adjust WORLD X/Y/Z along the tilted tool axis to track 5 N; the orthogonal motion axes and orientation retain their pose targets.
 
 The robot must start fault-free, IDLE and all-stopped. By default it must already be operational. `--auto-servo-on` explicitly permits one robot-wide `ServoOn()` from `NOT_SERVO_ON`, with a 10-second readiness deadline; this may release both arms' brakes. Mode switching and Stop are also robot-wide SDK operations. Sending targets only to `ARM_1` does not mechanically lock `ARM_2`.
 
 The operator's 2026-10-21 log shows a controller rejection of the initial non-real-time tilt target before any observed tilt motion. It does not establish an unreachable pose, a joint-limit violation, or a quaternion-order error. The near-180-degree measured Home quaternion and a negative target `qw` are valid representations; feasibility remains a controller-side question.
 
-`--tilt-method nrt` retains the original direct non-real-time tilt command and is the default. Optional `--tilt-method movel` sends one ARM_1 `MoveL` primitive for the same fixed-position, 15-degree WORLD +Y target. MoveL receives WORLD position in metres, Euler ZYX orientation and measured ARM_1 reference joints in degrees, angular velocity converted from 0.10 rad/s to degrees/s, `vel=0.01`, `acc=0.10` and `zoneRadius=ZFine`. These units and parameter ranges follow the [Enlight MoveL manual](https://www.flexiv.com/software/primitives/en/3E.1/enlight/Motion.html#movel). Neither method automatically retries, switches planners after rejection, or clears a fault. MoveL has not been verified to make the reported target feasible.
+`--tilt-method nrt` retains the original direct non-real-time tilt command and is the default. Optional `--tilt-method movel` sends one ARM_1 `MoveL` primitive for the same fixed-position, 15-degree WORLD +Y target. MoveL receives WORLD position in metres, Euler ZYX orientation and measured ARM_1 reference joints in degrees, angular velocity converted from 0.10 rad/s to degrees/s, `vel=0.01`, `acc=0.10` and `zoneRadius=ZFine`. These units and parameter ranges follow the [Enlight MoveL manual](https://www.flexiv.com/software/primitives/en/3E.1/enlight/Motion.html#movel). Neither method automatically retries, switches planners after rejection, or clears a fault. The operator's 2026-10-22 run observed completion of this MoveL tilt; descent is a separate phase.
 
-`--tilt-only` runs ARM_1 Home and the selected initial tilt, then calls Stop and exits before F/T zeroing, contact search or RT control. For an operator-chosen isolated tilt trial after checking the controller's fault and stopped state:
+`--descent-method nrt|movel` independently selects the 50 mm descent planner, defaulting to direct NRT. `--tilt-method movel` by itself does not select MoveL for descent. Explicit `--descent-method movel` submits one ARM_1 MoveL with the same WORLD position/orientation goal, `vel=0.005`, `acc=0.10`, the measured post-zeroing reference joints in degrees, and `zoneRadius=ZFine`. MoveL descent additionally requires ARM_1's own `MoveL` `reachedTarget` state; an early `terminated` state aborts. There is no automatic fallback or retry after a rejected target.
+
+The operator's 2026-10-22 14:06:55 run of the earlier WORLD -Z version completed Home, the MoveL tilt and F/T zeroing, then received event **303010** immediately after the direct NRT descent submission. The requested WORLD Z change was `0.1214951277 -> 0.0714951277 m`; RT pressing never started. This log identifies the rejected phase, but does not establish whether its cause is kinematic, dynamic or another controller constraint. An offline nominal-URDF check found IK solutions at all 51 one-millimetre samples of that earlier WORLD -Z path. That historical check does not validate the current TCP +Z path, controller trajectories, collision clearance, safety planes or actual calibration. Results are saved in `.build/world_z_nominal_ik_20261022.json`; no robot was connected to perform that check. The current TCP +Z move and pressing remain unverified on hardware.
+
+`--tilt-only` runs ARM_1 Home and the selected initial tilt, then calls Stop and exits before F/T zeroing, the 50 mm descent or RT control. For an operator-chosen isolated tilt trial after checking the controller's fault and stopped state:
 
 ```bash
 sudo third_party/flexiv_rdk/example/build/intermediate6_realtime_cartesian_motion_force_control \
   '<ACTUAL_FULL_SERIAL>' --arm ARM_1 --tilt-method movel --tilt-only
 ```
 
-Tilt planning prints full-precision `TILT_START`, `TILT_TARGET`, relative angle and starting ARM_1 joints. On a control exception, Stop is attempted first; the program then prints the phase, stop-request outcome, measured state and the same Robot instance's event IDs, descriptions, causes and recommended actions. A rejected Stop request is reported as unconfirmed, and does not replace the original exception. SDK event history is limited to the current connection lifetime. The pre-change source and binary are preserved in `.build/before-tilt-trajectory-fix-20261021/`.
+Tilt planning prints full-precision `TILT_START`, `TILT_TARGET`, relative angle and starting ARM_1 joints. `TCP_Z_MOVE_START` and `TCP_Z_MOVE_TARGET` are WORLD poses; `TCP_Z_MOVE_WORLD_DELTA_M` shows the WORLD translation corresponding to local TCP +Z 50 mm. Descent also records its measured joint reference and reports arrival displacement along the captured TCP Z axis. On a control exception, Stop is attempted first; the program then prints the phase, stop-request outcome, measured state and the same Robot instance's event IDs, descriptions, causes and recommended actions. If the event queue is initially empty, it waits up to 200 ms for asynchronous event delivery after the Stop attempt. A rejected Stop request is reported as unconfirmed, and does not replace the original exception. SDK event history is limited to the current connection lifetime. The pre-change source and binary are preserved in `.build/before-tilt-trajectory-fix-20261021/`.
 
 To record ARM_1 whole-arm contact estimates throughout this workflow, use the combined launcher below from the project root. Its default binary is now `third_party/flexiv_rdk/example/build/intermediate6_realtime_cartesian_motion_force_control`, matching the current example, rather than the historical `.build/realtime-examples` binary.
 
@@ -30,7 +135,7 @@ sudo .venv/bin/python scripts/run_realtime_cartesian_with_contact.py \
   '<ACTUAL_FULL_SERIAL>' --arm ARM_1 --contact-rate 20
 ```
 
-The recorder must write a valid ARM_1 CSV row before motion starts; it continues during Home, tilt, zeroing, contact search and RT control, and is stopped when the motion process exits, including on failure. A recorder failure interrupts the motion process. Each run uses a new `logs/whole_arm_contact_arm1_<UTC timestamp>.csv`; `CONTACT_RECORDING_READY` prints its absolute path. Rows contain host/robot timestamps, link index, and local-frame 3D contact force/position estimates. These are joint-sensor-based estimates, not tactile skin array readings, and the SDK has no separate enable switch for this readout. See [the data interpretation notes](docs/WHOLE_ARM_CONTACT.md).
+The recorder must write a valid ARM_1 CSV row before motion starts; it continues during Home, tilt, zeroing, the TCP +Z position move and RT control, and is stopped when the motion process exits, including on failure. A recorder failure interrupts the motion process. Each run uses a new `logs/whole_arm_contact_arm1_<UTC timestamp>.csv`; `CONTACT_RECORDING_READY` prints its absolute path. Rows contain host/robot timestamps, link index, and local-frame 3D contact force/position estimates. These are joint-sensor-based estimates, not tactile skin array readings, and the SDK has no separate enable switch for this readout. See [the data interpretation notes](docs/WHOLE_ARM_CONTACT.md).
 
 Motion flags are forwarded unchanged: add `--polish` for the 5 cm line, or `--tilt-method movel --tilt-only` for just Home and the isolated MoveL tilt. The launcher does not clear robot faults or enable servos automatically. The current example has no `--preview`; legacy preview requires an explicit `--rt-binary`. Combined-process readiness, recording failure and cleanup are checked offline; no new hardware motion or recording was performed to prepare this launcher update.
 
@@ -43,14 +148,20 @@ cmake --build third_party/flexiv_rdk/example/build \
   --target intermediate6_realtime_cartesian_motion_force_control --parallel 4
 ```
 
-The following command starts the ARM_1 Home/tilt/zero/contact-search workflow and then the 5 cm WORLD +Y real-time line with Z force control. Omitting `--polish` retains Home, tilt and contact search, then holds the contact pose instead of executing the line.
+For an operator-selected run using MoveL for both tilt and descent, the command below starts ARM_1 Home, the tilt, F/T zeroing and the full 50 mm TCP +Z position move, then retains the motion-axis pose targets and orientation while pressing TCP +Z with 5 N for 6 seconds. The current path has only been checked offline; it has not been shown to resolve event 303010 on this robot. The controller fault must be investigated and cleared and the robot must be READY, IDLE and stopped before any new motion run. Add `--polish` to also command a 5 cm WORLD +Y position line in 5 seconds, followed by a 1-second hold; the force controller remains free to adjust along TCP Z. Do not add `--tilt-only` when descent and pressing are wanted.
 
 ```bash
 sudo third_party/flexiv_rdk/example/build/intermediate6_realtime_cartesian_motion_force_control \
-  '<ACTUAL_FULL_SERIAL>' --arm ARM_1 --polish
+  '<ACTUAL_FULL_SERIAL>' --arm ARM_1 --TCP --tilt-method movel --descent-method movel
 ```
 
 Source and binary from before this change are preserved in `.build/before-arm1-only-20261021/`. Verification uses a real-SDK build and offline in-memory Robot/Scheduler replacements; this change has not been run against a robot. The older C++ interfaces and commands described below are historical and apply to earlier implementations.
+
+The source, tests, README and executable from before the 2026-10-22 WORLD-force update are preserved in `.build/before-world-press-20261022/`. This update is built and checked offline without connecting to or starting the robot.
+
+The source, tests, README and executable from before the independent descent-planner option are preserved in `.build/before-descent-planner-option-20261022/`.
+
+The source, tests, README and executable from before the TCP +Z direction change are preserved in `.build/before-tcp-positive-z-20261022/`. This update is built and checked offline without connecting to or starting the robot.
 
 ## Earlier setup and motion notes
 
