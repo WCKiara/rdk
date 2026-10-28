@@ -6,4 +6,3 @@ config/robot.env
 docs/SETUP_REPORT.md
 .build/
 .rdk-v2.1/
-.rdk-v2.2/

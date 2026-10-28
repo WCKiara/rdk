@@ -21,18 +21,7 @@ python scripts/record_whole_arm_contact.py --help
 
 需要在终端同时看每条记录时加 `--show-live`；记录另一条臂使用 `--arm ARM_2`。同名输出文件会被覆盖。所选臂没有数据、连杆力和位置数组为空或长度不一致、数值非有限、连接断开时脚本报错退出。
 
-## 随当前运动示例自动记录
-
-从项目根目录运行下面的联合命令，默认以 20 Hz 记录 ARM_1。采集进程先取得一条有效数据，再启动当前 `third_party/flexiv_rdk/example/build/` 下的运动程序。运动退出（包括故障）后采集结束；采集进程异常退出时，联合脚本向运动进程发送中断，触发运动程序的停止处理。它不会自动清故障或使能机器人。
-
-```bash
-sudo .venv/bin/python scripts/run_realtime_cartesian_with_contact.py \
-  '<完整机器人序列号>' --arm ARM_1 --contact-rate 20
-```
-
-这条命令保留运动程序默认的 Home、倾斜、清零、接触搜索和力控保持流程。加 `--polish` 会在接触后执行 5 cm 的 WORLD +Y 直线；加 `--tilt-method movel --tilt-only` 则只执行 Home 和 MoveL 倾斜，结束后 Stop 退出。采集与运动在独立进程运行，CSV 写入不在 1000 Hz 控制回调中执行。
-
-输出自动使用不重复的 `logs/whole_arm_contact_arm1_<UTC时间戳>.csv`，终端的 `CONTACT_RECORDING_READY` 显示绝对路径。加 `--contact-output <新文件路径>` 可指定路径，联合脚本拒绝已存在的文件。即使运动失败，已经刷新的数据仍留在 CSV；这不能证明运动成功，应同时查看运动日志。
+## CSV 数据说明
 
 CSV 的一行对应一个采样时刻、所选臂中的一个连杆索引；包含主机时间、机器人时间、三维接触力和三维接触位置。`link_index` 是返回数组内从 0 开始的索引；SDK 文档没有给出该索引与 `Model.link_names()` 的逐组对应关系，不能直接给索引附会肩、肘、腕等物理名称。不同连杆的力和位置使用不同局部坐标系，不能直接按 XYZ 分量相加。`force_*_N` 与 `position_*_m` 是脚本采用的常规物理单位列名；该接口的头文件没有单独标注单位，CSV 列名不等于已完成单位或力值标定。
 
