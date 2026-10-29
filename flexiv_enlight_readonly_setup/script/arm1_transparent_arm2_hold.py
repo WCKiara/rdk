@@ -14,7 +14,7 @@ import time  # 轮询间隔与超时计时。
 # Zero Gravity Floating 页。6 维的按末端 X Y Z Rx Ry Rz 排列，7 维的按关节 J1–J7 排列。
 FLOATING_AXIS = [1] * 6  # floatingAxis：允许浮动的末端轴，1 浮动，0 锁住。文档默认 1 1 1 1 1 1。
 ENABLE_ELBOW_MOTION = 1  # enableElbowMotion：肘部（零空间）能否跟着手动，1 能；0 肘部不动，末端 6 轴照样能拖。文档默认 0。设 1 肘部会自己漂（见下方 10-28 记录）。
-DAMPING_LEVEL = [0.0] * 6  # dampingLevel：阻尼，越小越轻。范围 0–100，文档默认 0；0 已是最轻。
+DAMPING_LEVEL = [10.0] * 6  # dampingLevel：阻尼，越小越轻。范围 0–100，文档默认 0。0 最轻，但 FloatingCartesian 在 0 + 最小惯量下没人推也会自己动（见 10-28 记录），所以加一点让它能静止。
 INERTIA_SCALE = [0.8, 0.8, 0.8, 0.65, 0.65, 0.65]  # inertiaScale：期望惯量缩放，越小越轻但可能振动。此值即下限，最轻；上限和文档默认 1。
 RESPONSE_TORQUE = [0.2, 0.5, 0.2, 0.25, 0.15, 0.1, 0.2]  # responseTorque：关节死区 [Nm]，外力矩低于它推不动；越小越透明，太小会自己漂。范围 0–3，文档默认 1.5 1.5 1.5 1.5 0.5 0.5 0.3。
 FRICTION_COMP_SCALE = [100.0] * 7  # frictionCompScale：摩擦补偿百分比，越大越顺。范围 50–100，文档默认 100；100 已是最顺。
@@ -24,13 +24,20 @@ MAX_VEL = 2.0  # maxVel：TCP 最大线速度 [m/s]，手推超过它会被拦�
 #   enableSixAxisJntCtrl：1 时 A3 轴锁在初始位置不动，默认 0。
 #   diEnableFloating：只有该数字输入为 ON 时才能拖动，默认 NONE（不需要信号）。
 #
-# 实测记录（dampingLevel、inertiaScale、frictionCompScale 每次都在上面的最透明极限值，只改了 responseTorque）：
+# 实测记录（dampingLevel 除注明外都是 0，inertiaScale、frictionCompScale 都在上面的最透明极限值）：
 #   2026-10-23 responseTorque 全 0                               → ARM_1 自己加速跑走，拍了 E-stop。
 #   2026-10-27 0.21 0.51 0.20 0.26 0.15 0.11 0.20（FloatingJoint）    → 不漂。
 #   2026-10-27 0.19 0.42 0.09 0.18 0.10 0.08 0.14（FloatingJoint）    → 不漂；手感与上一行没有任何区别。
 #   2026-10-28 0.06 0.13 0.08 0.09 0.06 0.06 0.07（FloatingCartesian，肘部 1）→ 2 秒内自己漂到 0.08 rad/s。
 #   2026-10-28 0.20 0.50 0.20 0.25 0.15 0.10 0.20（FloatingCartesian，肘部 1）→ 0.4 秒内 J3、J5、J6 自己转到 0.11 rad/s，
 #              J4（肘关节）不动：肘部在零空间里漂。同样 4 个参数在 FloatingJoint 下不漂，所以只把肘部改成 0。
+#   2026-10-28 0.20 0.50 0.20 0.25 0.15 0.10 0.20（FloatingCartesian，肘部 0）→ 0.8 秒内 J1 自己转到 0.05 rad/s。
+#              外力矩 0.10 -0.55 -0.09 0.53 -0.07 -0.10 -0.01：超死区的是 J2、J4，J1 在死区内。
+#   2026-10-28 同上第二次                                         → 0.4 秒内 J2 自己转到 0.07 rad/s。
+#              外力矩 -0.08 0.20 -0.05 -0.21 -0.07 -0.12 -0.04：只有 J6 超死区 0.02，J2 远在死区内；J2、J4 符号与上一次相反。
+#              所以不是某个关节超死区推动的：FloatingCartesian 在这 4 个参数下自己就不能静止（同样参数 FloatingJoint 不漂）。
+#   2026-10-28 同上，dampingLevel 5                                → 0.4 秒内 J2 0.06、J6 0.05 rad/s，照样漂。
+#              外力矩 -0.11 0.18 -0.09 -0.21 -0.08 -0.12 -0.03，与上一次几乎一样。dampingLevel 10 尚未实测。
 #   当前 responseTorque 取不漂的第一组（取整）：手感与更小的一组相同，但给随姿态变化的模型误差留了余量
 #   （J2 静止误差 10-27 测到 0.41，10-28 只有 0.08）。再往下减手感不会变轻，只会更容易漂。
 # ====================================================================================
@@ -49,6 +56,10 @@ OPERATIONAL_TIMEOUT = 30.0  # 流程：上伺服后等待就绪的最长时间 [
 CONFIRM_TIMEOUT = 2.0  # 流程：下发后确认两臂原语都在运行的最长时间 [s]。
 POLL_PERIOD = 0.05  # 流程：状态监控周期 [s]。
 FLOATING_PRIMITIVE = "FloatingCartesian"  # ARM_1 运行的原语。
+# 回正：浮动前 ARM_1 先用 Home 原语回到控制器的 home 姿态（文档默认 0 -40 0 90 0 -50 0 deg），ARM_2 照样 Hold。
+# 命令行 --no-home 跳过回正，直接在当前姿态浮动。
+HOME_JNT_VEL_SCALE = 20  # Home 原语的 jntVelScale：关节速度百分比，100 为全速。范围 1–100，文档默认 20。不影响手感。
+HOME_TIMEOUT = 30.0  # 流程：回正到位并停稳的最长时间 [s]。
 
 VECTOR_LIMITS = {  # 文档给出的范围：原语参数名 -> (下限, 上限)。
     "floatingAxis": ([0] * 6, [1] * 6),
@@ -84,6 +95,7 @@ def parse_args(argv=None):  # 读取命令行；未给出的参数用上方常�
     parser.add_argument("--response-torque", default=RESPONSE_TORQUE, **joint)
     parser.add_argument("--friction-comp-scale", default=FRICTION_COMP_SCALE, **joint)
     parser.add_argument("--max-vel", type=float, default=MAX_VEL)
+    parser.add_argument("--no-home", dest="home", action="store_false", help="不先回正，直接在当前姿态浮动")
     parser.add_argument("--clear-fault", action="store_true", help="启动时若有故障先尝试清除；不加则直接退出")
     args = parser.parse_args(argv)
 
@@ -123,6 +135,46 @@ def not_running_reason(robot, flexivrdk):  # 机器人不能继续运行的具�
     return None
 
 
+def check_still(robot_states, group, flexivrdk, args):  # 没人推却在动就抛出，附上外力矩和提示。
+    speeds = [abs(v) for v in robot_states[group].dtheta]  # 电机侧关节速度，噪声小。
+    if max(speeds) <= STILL_JOINT_VEL:
+        return
+    moving = "、".join(f"J{i} {s:.2f}" for i, s in enumerate(speeds, start=1) if s > STILL_JOINT_VEL)
+    tau_ext = robot_states[group].tau_ext  # 对比死区：哪个关节超过了它。
+    if group != flexivrdk.JointGroup.ARM_1:
+        hint = "Hold 没有保持住"
+    elif args.enable_elbow_motion:
+        hint = "肘部（零空间）在漂，把 ENABLE_ELBOW_MOTION 设为 0"
+    else:  # 这是臂已经在动时的外力矩，只作记录，不代表是哪个关节推动的。
+        over = "、".join(f"J{i} {abs(t):.2f}>{r:g}" for i, (t, r)
+                        in enumerate(zip(tau_ext, args.response_torque), start=1) if abs(t) > r)
+        hint = (f"阻尼不够，调大 DAMPING_LEVEL（现在 {args.damping_level}）；"
+                + (f"超过 RESPONSE_TORQUE 的关节：{over}" if over else "外力矩都在 RESPONSE_TORQUE 以内"))
+    raise RuntimeError(f"{flexivrdk.kJointGroupNames[group]} 没人推却在动"
+                       f"（{moving} rad/s；外力矩 {[round(t, 2) for t in tau_ext]} Nm）：{hint}")
+
+
+def home_arm1(robot, flexivrdk, args):  # ARM_1 用 Home 原语回正，ARM_2 照样 Hold；到位并停稳后返回。
+    arm1 = flexivrdk.JointGroup.ARM_1
+    robot.ExecutePrimitive(build_commands(flexivrdk, flexivrdk.PrimitiveArgs("Home", {"jntVelScale": HOME_JNT_VEL_SCALE})))
+    print(f"ARM_1 回正中（Home，关节速度 {HOME_JNT_VEL_SCALE}%），Ctrl+C 可随时停 ……", flush=True)
+    deadline = time.monotonic() + HOME_TIMEOUT
+    while True:
+        reason = not_running_reason(robot, flexivrdk)
+        if reason:
+            raise RuntimeError(reason)
+        robot_states = robot.states()
+        check_still(robot_states, flexivrdk.JointGroup.ARM_2, flexivrdk, args)  # 回正期间 ARM_2 也不许动。
+        state = robot.primitive_states().get(arm1)
+        reached = state is not None and state.pt_name == "Home" and state.names_and_values.get("reachedTarget", 0)
+        if reached and max(abs(v) for v in robot_states[arm1].dtheta) <= STILL_JOINT_VEL:
+            print("ARM_1 已回正。", flush=True)
+            return
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"ARM_1 {HOME_TIMEOUT:g} 秒内没有回正到位并停稳")
+        time.sleep(POLL_PERIOD)
+
+
 def main(argv=None):
     args = parse_args(argv)
 
@@ -156,6 +208,8 @@ def main(argv=None):
 
     try:
         robot.SwitchMode(flexivrdk.Mode.NRT_PRIMITIVE_EXECUTION)
+        if args.home:
+            home_arm1(robot, flexivrdk, args)
         params = floating_params(args)
         commands = build_commands(flexivrdk, flexivrdk.PrimitiveArgs(FLOATING_PRIMITIVE, params))
         expected = {group: command.pt_name for group, command in commands.items()}  # 每条臂应在运行的原语。
@@ -187,18 +241,7 @@ def main(argv=None):
             for group in expected:
                 if group == flexivrdk.JointGroup.ARM_1 and not still_check:
                     continue  # 静止检查结束后 ARM_1 由人手拖，不再限速。
-                speeds = [abs(v) for v in robot_states[group].dtheta]  # 电机侧关节速度，噪声小。
-                if max(speeds) > STILL_JOINT_VEL:
-                    moving = "、".join(f"J{i} {s:.2f}" for i, s in enumerate(speeds, start=1) if s > STILL_JOINT_VEL)
-                    tau_ext = [round(t, 2) for t in robot_states[group].tau_ext]  # 对比死区：哪个关节超过了它。
-                    if group != flexivrdk.JointGroup.ARM_1:
-                        hint = "Hold 没有保持住"
-                    elif args.enable_elbow_motion:
-                        hint = "肘部（零空间）在漂，把 ENABLE_ELBOW_MOTION 设为 0"
-                    else:
-                        hint = "调大在动关节的 RESPONSE_TORQUE"
-                    raise RuntimeError(f"{flexivrdk.kJointGroupNames[group]} 没人推却在动"
-                                       f"（{moving} rad/s；外力矩 {tau_ext} Nm）：{hint}")
+                check_still(robot_states, group, flexivrdk, args)
             if confirmed and not still_check and not free:
                 print("静止检查通过：ARM_1 可以手拖；ARM_2 Hold 不动。按 Ctrl+C 结束。", flush=True)
                 free = True
