@@ -11,6 +11,9 @@ endif()
 set(flexiv_rdk_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.rdk-v2.1/lib/cmake/flexiv_rdk" CACHE PATH "RDK 2.1 CMake config")
 find_package(flexiv_rdk 2.1 EXACT REQUIRED)
 
-add_executable(arm1_transparent_arm2_hold_rt arm1_transparent_arm2_hold_rt.cpp)
-target_link_libraries(arm1_transparent_arm2_hold_rt flexiv::flexiv_rdk)
-set_target_properties(arm1_transparent_arm2_hold_rt PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+# 关节空间版和笛卡尔空间版，各编成一个程序。
+foreach(program arm1_transparent_arm2_hold_rt arm1_transparent_arm2_hold_rt_cartesian)
+  add_executable(${program} ${program}.cpp)
+  target_link_libraries(${program} flexiv::flexiv_rdk)
+  set_target_properties(${program} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+endforeach()

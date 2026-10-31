@@ -50,7 +50,7 @@ constexpr size_t kDoF = rdk::kSerialJointDoF;  // 每条臂的关节数，7。
 //   默认是官方 intermediate4 的值。范围 0 到 kHoldKd（官方 hold 增益，已知稳定），再大可能振荡。
 //   阻尼也决定没人推时臂自己漂多快：静止时的模型误差力矩 e 让关节以 e / 阻尼 匀速漂（J2 误差 0.4 Nm、
 //   阻尼 10 → 0.04 rad/s）；阻尼 0 时不是匀速而是越漂越快，直到超过 kArm1MaxJointVel 整机停。
-const std::array<double, kDoF> kFloatingDamping = {10.0, 10.0, 5.0, 5.0, 1.0, 1.0, 1.0};
+const std::array<double, kDoF> kFloatingDamping = {5.0, 5.0, 0, 2.5, 0.5, 0.5, 0.5};
 // kFrictionCompScale：RtJointTorqueCmd::friction_comp_scale，关节摩擦补偿百分比。范围 0–100，RDK 默认 100。
 //   100 = 摩擦全部补偿，最透明；小于 100 相当于多加一份阻尼。
 constexpr double kFrictionCompScale = 100.0;
