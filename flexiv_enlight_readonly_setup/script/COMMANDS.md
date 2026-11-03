@@ -82,6 +82,35 @@ sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --p
 
 输出最后一行如果是"已停止：……"，后面写的就是停机原因。没有这一行，说明是 Ctrl+C 正常结束的。
 
+## 运行 RT 六维笛卡尔浮动（intermediate8）
+
+ARM_1 末端 X Y Z、Rx Ry Rz 六个方向都能拖；ARM_2 全程不动。流程和上面两个程序一样：① 回正 → ② 受力回 0 → ③ 实时模式。每次给 ARM_1 发指令都同时给 ARM_2 发 hold；③ 从开始到 Ctrl+C 一直是实时模式，不切换。
+
+③ 开始后 ARM_1 先用名义刚度保持约 0.1 秒，然后降刚度。看到"ARM_1 已浮动"之后就可以拖。降刚度那一下要扶住 ARM_1。
+
+第一次编译前先重新配置（`CMakeLists.txt` 新加了这个目标）。按刚度从高到低，一次跑一条：
+
+```bash
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.10
+```
+
+```bash
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.00
+```
+
+中间依次试 `--scale=0.05`、`--scale=0.02`。
+
+| 选项 | 作用 |
+|---|---|
+| `--scale=S` | ARM_1 六轴刚度占名义刚度的比例，范围 0–1，默认 0.10。0 是零刚度浮动 |
+| `--nullspace=W` | 肘部被拉回起始姿态的权重，范围 0.1–1，默认 0.5 |
+| `--log=FILE.csv` | 浮动期间 100 Hz 记录 ARM_1 的末端位姿、速度、外力和关节状态 |
+| `--passive` | 六轴被动零力。需要六维力传感器，这台没有，会在上伺服之前直接退出 |
+| `--no-home` | 跳过回正 |
+| `--clear-fault` | 启动时有故障先尝试清除 |
+
+要长期改默认值，改源码里"透明度参数：在这里调"一段的 `kStiffnessScale`、`kNullSpaceRefTracking`、`kPassiveForceControl`。停下来之后怎么看原因，同上面的"停下来之后"。详细说明见 [README_cartesian_floating.md](README_cartesian_floating.md)。
+
 ## 清除故障
 
 ```bash
