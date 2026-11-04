@@ -1,4 +1,4 @@
-// RT 六维笛卡尔浮动：ARM_1 末端 X Y Z、Rx Ry Rz 六个方向都能手拖，尽可能透明；ARM_2 全程不动。
+// RT 笛卡尔浮动：ARM_1 末端 X Y Z 能手拖，尽可能透明；Rx Ry Rz 由 kLockRotation 锁定（false 时六个方向都能拖）；ARM_2 全程不动。
 // 控制方法照所附方案（原始版本 third_party/flexiv_rdk/example/intermediate8_realtime_cartesian_floating.cpp，不改它），
 // 运行流程照 arm1_transparent_arm2_hold_rt.cpp：
 //   ① 回正：ARM_1 跑 Home 原语回到 home 姿态（--no-home 跳过）；
@@ -10,9 +10,12 @@
 // ① 之前机器人要在 IDLE：SetPassiveForceControl 文档写明只能在 IDLE 下调用。
 //
 // ③ 实时调度器每 1 ms 给两条臂各发一次末端指令（StreamCartesianMotionForce），由控制器内置的运动-力统一控制器跟踪：
-//   ARM_1：目标位姿一直是进入 ③ 时的末端位姿、目标力 0；不跟随实测位姿，也不自己解 IK，浮动靠的是刚度降到 0。
-//          先用名义刚度 K_x_nom 成功发满 kWarmupCycles 次，确认实时指令一直在发，再把六轴刚度降到 K_x_nom × kStiffnessScale，
-//          或者 --passive 开六轴被动零力控制。降刚度、开力控都是实时模式里的参数设置，不切换控制模式，两条臂的指令照常发。
+//   ARM_1：目标力 0，不自己解 IK。先用名义刚度 K_x_nom、目标位姿锁在进入 ③ 时的末端位姿，成功发满 kWarmupCycles 次，
+//          确认实时指令一直在发；然后目标位置改成每 1 ms 跟随实测位置，再把 X Y Z 刚度降到 K_x_nom × kStiffnessScale，
+//          或者 --passive 开 X Y Z 被动零力控制。Rx Ry Rz 锁定（kLockRotation）：姿态目标不跟随、刚度保持 K_x_nom；
+//          不锁定时六轴都这样浮动。降刚度、开力控都是实时模式里的参数设置，不切换控制模式，两条臂的指令照常发。
+//          跟随实测位姿是和所附方案不同的地方：方案的目标位姿一直锁在起点，刚度 0.10 时 ARM_1 像被弹簧拴住，推不动、
+//          松手弹回（11-03 实测）。跟随之后弹簧力约为 0，只剩阻尼：哪里都能拖，松手停在原地，没人推时是匀速漂、不会越漂越快。
 //   ARM_2：6 轴纯位置控制、名义刚度，目标位姿一直是进入 ③ 时的末端位姿（官方 intermediate5 的 --hold）。
 //          实时模式下没有 Hold 原语可用，ARM_2 的 hold 指令就是每 1 ms 发一次的这个位姿。
 // 7 轴臂的肘部（零空间）不归末端刚度管，由零空间姿态控制拉回进入 ③ 时的关节姿态，所以肘部不像关节版那样完全自由。
@@ -50,14 +53,16 @@ using namespace flexiv;
 
 namespace {
 constexpr size_t kDoF = rdk::kSerialJointDoF;  // 每条臂的关节数，7。
-constexpr size_t kCartDoF = rdk::kCartDoF;  // 末端自由度，6。
 
 // ================================ 透明度参数：在这里调 ================================
 // 都是 RDK 的官方参数，也可以用命令行参数临时覆盖，不用重新编译。
-// kStiffnessScale：ARM_1 六轴笛卡尔刚度 = K_x_nom × kStiffnessScale（SetCartesianImpedance 的 K_x，K_x_nom 启动时打印）。
+// kStiffnessScale：ARM_1 X Y Z 笛卡尔刚度 = K_x_nom × kStiffnessScale（kLockRotation = false 时六轴都是；SetCartesianImpedance
+//   的 K_x，K_x_nom 启动时打印）。
 //   范围 0–1；0 = 六维零刚度浮动，最透明（文档："Setting motion stiffness of a motion-controlled Cartesian axis to 0 will
 //   make this axis free-floating"）。方案建议 0.10 → 0.05 → 0.02 → 0.00 一档一档降。命令行 --scale=S。
 //   阻尼比 Z_x 用 RDK 默认 0.7：文档警告改它可能不稳定。
+//   浮动时目标位置跟随实测位置，刚度几乎不产生弹簧力，实际起作用的是阻尼：按阻尼比的定义，阻尼 = 2 × 0.7 × √(刚度 × 惯量)，
+//   所以比例越小阻尼越小、越透明；0 时阻尼也是 0，没人推会越漂越快。程序不设速度限位，只能靠 E-stop 和控制器自带的保护停。
 constexpr double kStiffnessScale = 0.10;
 // kNullSpaceRefTracking：SetNullSpaceObjectives 的 ref_positions_tracking，肘部（零空间）拉回进入 ③ 时关节姿态的权重。
 //   范围 0.1–1.0，RDK 默认 0.5；越小肘部越自由。0.1 是最小值，不等于关掉零空间控制。另外两个权重用 RDK 默认 0。
@@ -66,10 +71,21 @@ constexpr double kNullSpaceRefTracking = 0.5;
 // kPassiveForceControl：true = 六轴被动零力控制（方案的 passive zero-wrench）：SetPassiveForceControl 打开，六轴都做力控、
 //   目标力 0，只前馈 0 力，不加主动力控的阻尼；此时 kStiffnessScale 不起作用，SetForceControlAxis 的线速度保护也不起作用。
 //   Rx Ry Rz 力矩控制要 6 维力传感器：10-30 实测这台报错 "moment control is only available with 6DoF F/T sensor"，
-//   所以启动时检查到没有力传感器就退出。命令行 --passive。
+//   所以 kLockRotation = false 时启动检查到没有力传感器就退出；kLockRotation 时只有 X Y Z 做力控，不用 6 维力传感器。
+//   命令行 --passive。
 constexpr bool kPassiveForceControl = false;
-// 目标位姿固定为进入 ③ 时的位姿、目标力固定为 0，不是参数。
+// kLockRotation：true = 锁定 ARM_1 末端 Rx Ry Rz，只有 X Y Z 能拖。浮动时这 3 轴的目标姿态一直是进入 ③ 时的姿态（不跟随实测姿态），
+//   刚度保持名义刚度 K_x_nom（RDK 允许的最大值），和 ARM_2 hold 一样硬；--passive 时也只有 X Y Z 做力控。
+//   false = 六轴都浮动。没有命令行参数，改了要重新编译。
+constexpr bool kLockRotation = true;
+// 目标位姿（预热时是进入 ③ 时的位姿；浮动时位置跟随实测位置，姿态 kLockRotation 时不跟随）、目标力固定为 0，不是参数。
 // ====================================================================================
+
+// ===== ③ ARM_2 hold：发给机器人，只影响 ARM_2，不影响 ARM_1 手感 =====
+// kArm2NullSpaceRefTracking：ARM_2 的 SetNullSpaceObjectives ref_positions_tracking，肘部拉回 hold 姿态的权重。
+//   范围 0.1–1.0，RDK 默认 0.5；取上限 1.0，拉得最紧。11-03 实测默认 0.5 时 ARM_2 末端不动，但 J1、J3 反向转
+//   （J2 ≈ -0.09，J1 J3 近乎共轴，是零空间自运动），约 4 秒超过当时 0.01 rad 的停机检查。另外两个权重用 RDK 默认 0。
+constexpr double kArm2NullSpaceRefTracking = 1.0;
 
 // ===== ① 回正、② 受力回 0：原语参数，同 arm1_transparent_arm2_hold_rt.cpp，照抄 Flexiv Primitives 3E.1 文档，不影响手感 =====
 constexpr int kHomeJntVelScale = 20;  // Home 的 jntVelScale：关节速度百分比，100 为全速。范围 1–100，文档默认 20。
@@ -79,17 +95,11 @@ constexpr double kZeroDataCollectTime = 0.2;  // dataCollectTime：采样多久�
 constexpr int kZeroEnableStaticCheck = 0;  // enableStaticCheck：清零前检查机器人是否静止，1 检查。文档默认 0。
 constexpr int kZeroCalibExtraPayload = 0;  // calibExtraPayload：标定时是否把额外负载算进工具负载，1 算。文档默认 0。
 
-// ========== 安全检查和流程：不发给机器人、不影响手感，只决定什么时候整机停 ==========
-// ARM_1 的 4 项检查和阈值照所附方案，是调试用的示例值，不是 Flexiv 认证的安全限值。
-constexpr double kMaxTcpLinearVel = 0.20;  // 安全：③ ARM_1 末端线速度超过它就整机停 [m/s]。
-constexpr double kMaxTcpAngularVel = 0.70;  // 安全：③ ARM_1 末端角速度超过它就整机停 [rad/s]。
-constexpr double kMaxTcpDisplacement = 0.20;  // 安全：③ ARM_1 末端离开进入 ③ 时的位置超过它就整机停 [m]。
-// 安全：③ ARM_1 任一关节离位置极限不到它就整机停 [rad]；进入 ③ 时就不到，不开始。
-constexpr double kJointLimitMargin = 0.12;
-constexpr double kJointVelFraction = 0.30;  // 安全：③ ARM_1 任一关节速度超过 dq_max 的这个比例就整机停。
-// 安全：①②③ 全程 ARM_2 任一关节离开 hold 位置超过它就整机停 [rad]，0.01 rad ≈ 0.6°，同 arm1_transparent_arm2_hold_rt.cpp。
-// 结束时打印 ③ 期间 ARM_2 最大偏离和速度。
-constexpr double kArm2MaxPosError = 0.01;
+// ========== 停机条件和流程：不发给机器人、不影响手感，只决定什么时候整机停 ==========
+// 11-03 按要求不设速度、位置限位类的停机检查：ARM_1 末端速度、离起点的位移、关节离极限的余量、关节速度，
+// ARM_2 偏离 hold 位置，都不检查（ARM_2 的偏离仍然记录，结束时打印）。
+// 只在机器人自己不能继续时停：断线、E-stop、故障、未就绪、控制模式被切走、实时指令迟到过多、实时任务心跳丢失。
+// 控制器自带的保护（关节硬极限、安全设置里的限速、碰撞检测等）RDK 关不掉，照常有效。
 constexpr auto kHeartbeatTimeout = std::chrono::milliseconds(100);  // 安全：③ 实时任务这么久没成功发出指令就整机停。
 constexpr double kTimelinessFailureLimit = 2.0;  // 安全：SetTimelinessFailureLimit，1 秒内迟到指令的百分比上限，RDK 默认 2。
 constexpr uint64_t kWarmupCycles = 100;  // 流程：③ 先用名义刚度成功发满这么多次指令，才降刚度。
@@ -117,12 +127,12 @@ struct Arm2Record  // ③ 期间 ARM_2 最大偏离 hold 位置 [rad] 和最大�
     std::array<double, kDoF> max_vel = {};
 };
 
-struct RtTargets  // ③ 的指令和检查用的数据：进入 ③ 时定好，调度器启动后实时任务只读。
+struct RtTargets  // ③ 的指令和记录用的数据：进入 ③ 时定好，调度器启动后只有实时任务读写，主线程不再碰。
 {
-    std::map<rdk::JointGroup, rdk::RtCartesianCmd> commands;  // 每 1 ms 发出的两条臂指令，一直不变。
-    std::array<double, rdk::kPoseSize> arm1_pose = {};  // ARM_1 进入 ③ 时的末端位姿：目标位姿，也是 kMaxTcpDisplacement 的起点。
-    std::vector<double> arm1_q_min, arm1_q_max, arm1_dq_max;  // ARM_1 关节位置极限 [rad] 和速度极限 [rad/s]。
-    std::vector<double> arm2_q;  // ARM_2 hold 时的关节位置 [rad]，只用来检查 ARM_2 动没动。
+    // 每 1 ms 发出的两条臂指令。g_arm1_follow 之后实时任务每次把 ARM_1 的目标位置（kLockRotation = false 时连姿态）
+    // 换成实测值，其余不变。
+    std::map<rdk::JointGroup, rdk::RtCartesianCmd> commands;
+    std::vector<double> arm2_q;  // ARM_2 hold 时的关节位置 [rad]，只用来记录 ARM_2 动了多少，不停机。
 };
 
 std::atomic<bool> g_stop = {false};  // 置 true 后实时任务不再发指令，主线程收尾。信号处理函数只做这一件事。
@@ -130,14 +140,17 @@ std::mutex g_reason_mutex;  // 保护 g_reason：实时线程和主线程都可�
 std::string g_reason;  // 第一个停机原因；空 = Ctrl+C 正常结束。
 std::atomic<uint64_t> g_sent_count = {0};  // ③ 实时任务成功发出指令的次数。
 std::atomic<int64_t> g_last_sent_ns = {0};  // ③ 实时任务最近一次成功发出指令的时刻 [ns]，见 NowNs。
+std::atomic<bool> g_arm1_follow = {false};  // ③ 降刚度前主线程置 true：之后 ARM_1 的目标位置每 1 ms 跟随实测位置。
 
 void PrintHelp()
 {
     std::cout << "用法：sudo .build/script/intermediate8_realtime_cartesian_floating <序列号> [选项]\n"
                  "  <序列号>          完整序列号，不要有空格，例如 Enlight-LL-123456\n"
-                 "  --scale=S         覆盖 kStiffnessScale：ARM_1 六轴刚度占名义刚度的比例 [0, 1]，0 = 零刚度浮动\n"
+                 "  --scale=S         覆盖 kStiffnessScale：ARM_1 X Y Z 刚度占名义刚度的比例 [0, 1]（Rx Ry Rz 由 kLockRotation\n"
+                 "                    锁定）；目标跟随实测位置，实际决定阻尼，越小越透明；0 = 无阻尼浮动\n"
                  "  --nullspace=W     覆盖 kNullSpaceRefTracking：肘部拉回参考姿态的权重 [0.1, 1]\n"
-                 "  --passive         覆盖 kPassiveForceControl：六轴被动零力控制，需要 6 维力传感器\n"
+                 "  --passive         覆盖 kPassiveForceControl：X Y Z 被动零力控制（kLockRotation = false 时六轴，\n"
+                 "                    要 6 维力传感器）\n"
                  "  --log=FILE.csv    ③ 浮动期间按 100 Hz 记录 ARM_1 的末端位姿、速度、外力和关节位置、速度\n"
                  "  --no-home         不先回正，在当前姿态受力回 0 后直接浮动\n"
                  "  --clear-fault     启动时若有故障先尝试清除；不加则直接退出\n"
@@ -223,28 +236,6 @@ void OnSignal(int)  // Ctrl+C、关闭终端、kill 都走同一个收尾流程�
     g_stop = true;
 }
 
-// 绝对值超过 limit 的关节，例如 "J2 1.05、J4 1.10"；都没超过返回空串。写成 !(… <= limit)：读数是 NaN 也算超过。
-template <typename Values>
-std::string OverLimit(const Values& values, double limit, int decimals)
-{
-    bool over = false;
-    for (size_t i = 0; i < kDoF; ++i) {
-        over = over || !(std::abs(values[i]) <= limit);
-    }
-    if (!over) {
-        return "";  // 每 1 ms 都走这里，不分配内存。
-    }
-    std::ostringstream oss;
-    oss.precision(decimals);
-    oss << std::fixed;
-    for (size_t i = 0; i < kDoF; ++i) {
-        if (!(std::abs(values[i]) <= limit)) {
-            oss << (oss.tellp() > 0 ? "、" : "") << "J" << i + 1 << " " << std::abs(values[i]);
-        }
-    }
-    return oss.str();
-}
-
 std::array<double, kDoF> Error(const std::vector<double>& q, const std::vector<double>& target)  // q - target [rad]。
 {
     std::array<double, kDoF> error;
@@ -254,62 +245,14 @@ std::array<double, kDoF> Error(const std::vector<double>& q, const std::vector<d
     return error;
 }
 
-void CheckArm2(const std::array<double, kDoF>& arm2_error)  // ARM_2 任一关节离开 hold 位置超过 kArm2MaxPosError 就抛出。
-{
-    if (const auto over = OverLimit(arm2_error, kArm2MaxPosError, 3); !over.empty()) {
-        throw std::runtime_error("ARM_2 离开 hold 位置超过 kArm2MaxPosError = " + Num(kArm2MaxPosError) + " rad（"
-                                 + over + " rad）：hold 没有保持住");
-    }
-}
-
-double Norm3(const std::array<double, kCartDoF>& v, size_t offset)  // v[offset]、v[offset+1]、v[offset+2] 组成的向量长度。
-{
-    return std::sqrt(v[offset] * v[offset] + v[offset + 1] * v[offset + 1] + v[offset + 2] * v[offset + 2]);
-}
-
 int64_t NowNs()  // steady_clock 的当前时刻 [ns]：实时线程记录、主线程比较，用来检查心跳。
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
 
-// ③ ARM_1 的检查：末端速度、末端离起点距离、关节离位置极限的余量、关节速度，任一不满足就抛出。
-// 比较都写成 !(值 <= 上限)：读数是 NaN 也算不满足。
-void CheckArm1(const rdk::RobotStates& arm1, const RtTargets& targets)
-{
-    const double linear_vel = Norm3(arm1.tcp_twist, 0);
-    const double angular_vel = Norm3(arm1.tcp_twist, 3);
-    if (!(linear_vel <= kMaxTcpLinearVel) || !(angular_vel <= kMaxTcpAngularVel)) {
-        throw std::runtime_error("ARM_1 末端速度 " + Num(linear_vel) + " m/s、" + Num(angular_vel)
-                                 + " rad/s，超过 kMaxTcpLinearVel = " + Num(kMaxTcpLinearVel)
-                                 + " m/s 或 kMaxTcpAngularVel = " + Num(kMaxTcpAngularVel) + " rad/s");
-    }
-    double distance2 = 0.0;
-    for (size_t i = 0; i < 3; ++i) {
-        const double d = arm1.tcp_pose[i] - targets.arm1_pose[i];
-        distance2 += d * d;
-    }
-    if (!(distance2 <= kMaxTcpDisplacement * kMaxTcpDisplacement)) {
-        throw std::runtime_error("ARM_1 末端离起点 " + Num(std::sqrt(distance2)) + " m，超过 kMaxTcpDisplacement = "
-                                 + Num(kMaxTcpDisplacement) + " m");
-    }
-    for (size_t i = 0; i < kDoF; ++i) {
-        const double q_min = targets.arm1_q_min[i], q_max = targets.arm1_q_max[i];
-        if (!(arm1.q[i] >= q_min + kJointLimitMargin && arm1.q[i] <= q_max - kJointLimitMargin)) {
-            throw std::runtime_error("ARM_1 J" + std::to_string(i + 1) + " = " + Num(arm1.q[i]) + " rad，离位置极限 ["
-                                     + Num(q_min) + ", " + Num(q_max) + "] 不到 kJointLimitMargin = "
-                                     + Num(kJointLimitMargin) + " rad");
-        }
-        const double vel_limit = kJointVelFraction * targets.arm1_dq_max[i];
-        if (!(std::abs(arm1.dtheta[i]) <= vel_limit)) {  // 电机侧速度，噪声小。
-            throw std::runtime_error("ARM_1 J" + std::to_string(i + 1) + " 速度 " + Num(std::abs(arm1.dtheta[i]))
-                                     + " rad/s，超过 dq_max × kJointVelFraction = " + Num(vel_limit) + " rad/s");
-        }
-    }
-}
-
-// 实时任务：每 1 ms 检查一次，然后把两条臂的末端指令放进同一条 StreamCartesianMotionForce 发出去。
-void PeriodicTask(rdk::Robot& robot, const RtTargets& targets, Arm2Record& record)
+// 实时任务：每 1 ms 记录一次 ARM_2 的偏离（不停机），然后把两条臂的末端指令放进同一条 StreamCartesianMotionForce 发出去。
+void PeriodicTask(rdk::Robot& robot, RtTargets& targets, Arm2Record& record)
 {
     if (g_stop) {
         return;  // 要停了：不再发指令，等主线程停掉调度器后 Stop()。
@@ -326,10 +269,14 @@ void PeriodicTask(rdk::Robot& robot, const RtTargets& targets, Arm2Record& recor
             record.max_error[i] = std::max(record.max_error[i], std::abs(arm2_error[i]));
             record.max_vel[i] = std::max(record.max_vel[i], std::abs(arm2.dtheta[i]));
         }
-        CheckArm2(arm2_error);
-        CheckArm1(arm1, targets);
 
-        // ARM_1：进入 ③ 时的位姿、目标力 0。ARM_2：进入 ③ 时的位姿，就是 hold。两条臂每次都一起发。
+        // ARM_1：预热时是进入 ③ 时的位姿，浮动时位置是实测位置；目标力 0、目标速度 0，所以只剩阻尼挡着手。
+        //        kLockRotation 时只拷贝 x y z，姿态（四元数）一直是进入 ③ 时的值，Rx Ry Rz 就锁在那里。
+        // ARM_2：进入 ③ 时的位姿，就是 hold。两条臂每次都一起发。
+        if (g_arm1_follow) {
+            std::copy_n(arm1.tcp_pose.begin(), kLockRotation ? 3 : rdk::kPoseSize,
+                targets.commands.at(rdk::JointGroup::ARM_1).pose_d.begin());
+        }
         robot.StreamCartesianMotionForce(targets.commands);
         g_last_sent_ns = NowNs();
         ++g_sent_count;
@@ -396,7 +343,9 @@ void Prepare(rdk::Robot& robot, const Params& params)  // 连接后的检查和�
     if (!robot.all_stopped()) {  // 有别的程序在动机器人时不接管。
         throw std::runtime_error("机器人还在运动；先停止其他控制程序");
     }
-    if (params.passive) {  // 上伺服、回正之前就检查，免得回正完才被拒绝。RDK：没装力传感器时 raw_ft_sensor 为 0。
+    // 只有 Rx Ry Rz 力矩控制要 6 维力传感器（10-30 实测），Rx Ry Rz 锁定时不用。
+    // 上伺服、回正之前就检查，免得回正完才被拒绝。RDK：没装力传感器时 raw_ft_sensor 为 0。
+    if (params.passive && !kLockRotation) {
         const auto ft = robot.states().at(rdk::JointGroup::ARM_1).raw_ft_sensor;
         if (std::all_of(ft.begin(), ft.end(), [](double v) { return v == 0.0; })) {
             throw std::runtime_error(
@@ -420,9 +369,9 @@ void Prepare(rdk::Robot& robot, const Params& params)  // 连接后的检查和�
 }
 
 // ①② 用：ARM_1 跑 arm1_primitive、ARM_2 跑 Hold，放进同一条 ExecutePrimitive，然后每 kMonitorPeriod 检查一次直到 done 为真。
-// done 收到 ARM_1 这条原语的状态，它已经不在运行时收到 nullptr。超时、机器人不能运行、ARM_2 离开 arm2_start、Ctrl+C 都抛出。
-void RunArm1Primitive(rdk::Robot& robot, const rdk::PrimitiveArgs& arm1_primitive, const std::vector<double>& arm2_start,
-    double timeout, const std::function<bool(const rdk::PrimitiveStates*)>& done)
+// done 收到 ARM_1 这条原语的状态，它已经不在运行时收到 nullptr。超时、机器人不能运行、Ctrl+C 都抛出。
+void RunArm1Primitive(rdk::Robot& robot, const rdk::PrimitiveArgs& arm1_primitive, double timeout,
+    const std::function<bool(const rdk::PrimitiveStates*)>& done)
 {
     std::map<rdk::JointGroup, rdk::PrimitiveArgs> commands = {
         {rdk::JointGroup::ARM_1, arm1_primitive},
@@ -441,7 +390,6 @@ void RunArm1Primitive(rdk::Robot& robot, const rdk::PrimitiveArgs& arm1_primitiv
         if (const auto reason = NotRunningReason(robot, rdk::Mode::NRT_PRIMITIVE_EXECUTION); !reason.empty()) {
             throw std::runtime_error(reason);
         }
-        CheckArm2(Error(robot.states().at(rdk::JointGroup::ARM_2).q, arm2_start));
         const auto states = robot.primitive_states();  // 只包含正在运行原语的关节组。
         const auto it = states.find(rdk::JointGroup::ARM_1);
         const bool running = it != states.end() && it->second.pt_name == arm1_primitive.pt_name;
@@ -543,6 +491,8 @@ int main(int argc, char* argv[])
     Arm2Record arm2_record;
     std::unique_ptr<rdk::Scheduler> scheduler;
     bool need_stop = false, started = false, logging = false;
+    uint64_t rt_mode_checks = 0;  // 拖动期间主线程查到控制模式是 RT_CARTESIAN_MOTION_FORCE 的次数，结束时打印。
+    double drag_seconds = 0.0;  // 拖动（ARM_1 已浮动之后）持续的秒数。
     try {
         scheduler = std::make_unique<rdk::Scheduler>();  // 先建调度器：系统问题在连机器人之前就暴露。
         robot = std::make_unique<rdk::Robot>(params.robot_sn);
@@ -552,9 +502,12 @@ int main(int argc, char* argv[])
         Prepare(*robot, params);
         const auto info = robot->info();
         const auto& arm1_K_nom = info.K_x_nom.at(rdk::JointGroup::ARM_1);
-        auto arm1_float_K = arm1_K_nom;  // ARM_1 浮动时的六轴刚度 = K_x_nom × stiffness_scale。
-        for (auto& k : arm1_float_K) {
-            k *= params.stiffness_scale;
+        // ARM_1 浮动时的刚度：X Y Z = K_x_nom × stiffness_scale；Rx Ry Rz 锁定时保持 K_x_nom，不锁定时也乘比例。
+        auto arm1_float_K = arm1_K_nom;
+        for (size_t i = 0; i < arm1_float_K.size(); ++i) {
+            if (i < 3 || !kLockRotation) {
+                arm1_float_K[i] *= params.stiffness_scale;
+            }
         }
 
         need_stop = true;  // 从这里起结束时必须 Stop()。
@@ -562,13 +515,13 @@ int main(int argc, char* argv[])
             robot->Stop();  // 机器人已静止，Stop() 只是切到 IDLE。
         }
         robot->SetPassiveForceControl(rdk::JointGroup::ARM_1, params.passive);  // 文档：只能在 IDLE 下调用。
-        robot->SwitchMode(rdk::Mode::NRT_PRIMITIVE_EXECUTION);  // ①② 用原语，只能在这个非实时模式下运行。
-        const auto arm2_start = robot->states().at(rdk::JointGroup::ARM_2).q;  // ①② 期间 ARM_2 不能离开这里。
+        // ①② 用原语，只能在这个非实时模式下运行；这时还不能拖 ARM_1。拖动只在 ③，③ 全程是实时模式。
+        robot->SwitchMode(rdk::Mode::NRT_PRIMITIVE_EXECUTION);
         if (params.home) {
             std::cout << "① ARM_1 回正中（Home，关节速度 " << kHomeJntVelScale << "%），ARM_2 Hold。Ctrl+C 可随时停 ……"
                       << std::endl;
-            RunArm1Primitive(*robot, rdk::PrimitiveArgs("Home", {{"jntVelScale", kHomeJntVelScale}}), arm2_start,
-                kHomeTimeout, [&](const rdk::PrimitiveStates* state) {
+            RunArm1Primitive(*robot, rdk::PrimitiveArgs("Home", {{"jntVelScale", kHomeJntVelScale}}), kHomeTimeout,
+                [&](const rdk::PrimitiveStates* state) {
                     if (!state) {
                         throw std::runtime_error("ARM_1 Home 没到位就结束了");
                     }
@@ -583,7 +536,7 @@ int main(int argc, char* argv[])
             rdk::PrimitiveArgs("ZeroFTSensor", {{"dataCollectTime", kZeroDataCollectTime},
                                                    {"enableStaticCheck", kZeroEnableStaticCheck},
                                                    {"calibExtraPayload", kZeroCalibExtraPayload}}),
-            arm2_start, kZeroTimeout, [](const rdk::PrimitiveStates* state) {
+            kZeroTimeout, [](const rdk::PrimitiveStates* state) {
                 return !state || rdk::utility::PrimitiveStateTrue(*state, "terminated");  // 文档默认转移条件。
             });
         PrintArm1Force(*robot, "后");
@@ -597,25 +550,23 @@ int main(int argc, char* argv[])
         }
         robot->SetForceControlFrame(rdk::JointGroup::ARM_1, rdk::CoordType::WORLD);  // RDK 默认；只在 --passive 开力控时用到。
         robot->SetNullSpaceObjectives(rdk::JointGroup::ARM_1, 0.0, 0.0, params.null_space_tracking);
+        robot->SetNullSpaceObjectives(rdk::JointGroup::ARM_2, 0.0, 0.0, kArm2NullSpaceRefTracking);
         const auto states = robot->states();
         const auto& arm1 = states.at(rdk::JointGroup::ARM_1);
         const auto& arm2 = states.at(rdk::JointGroup::ARM_2);
         robot->SetNullSpacePosture(rdk::JointGroup::ARM_1, arm1.q);  // 肘部参考姿态 = 进入 ③ 时的姿态。
-        targets.arm1_pose = arm1.tcp_pose;
-        targets.arm1_q_min = info.q_min.at(rdk::JointGroup::ARM_1);
-        targets.arm1_q_max = info.q_max.at(rdk::JointGroup::ARM_1);
-        targets.arm1_dq_max = info.dq_max.at(rdk::JointGroup::ARM_1);
+        robot->SetNullSpacePosture(rdk::JointGroup::ARM_2, arm2.q);  // 切模式时已自动设成当前姿态，这里写明，和 hold 位置一致。
         targets.arm2_q = arm2.q;
         targets.commands = {
             {rdk::JointGroup::ARM_1, rdk::RtCartesianCmd(arm1.tcp_pose, {0.0, 0.0, 0.0, 0.0, 0.0, 0.0})},
             {rdk::JointGroup::ARM_2, rdk::RtCartesianCmd(arm2.tcp_pose)},  // 只给位姿，就是纯位置控制。
         };
-        CheckArm1(arm1, targets);  // 进入 ③ 时就不满足（例如关节离位置极限太近）就不开始。
         std::cout << "ARM_1：名义刚度 K_x_nom [" << rdk::utility::Arr2Str(arm1_K_nom, 1) << "] N/m、Nm/rad；浮动时"
-                  << (params.passive ? std::string("六轴被动零力控制（kStiffnessScale 不起作用）")
-                                     : "刚度 × " + Num(params.stiffness_scale) + " = ["
-                                           + rdk::utility::Arr2Str(arm1_float_K, 1) + "]")
-                  << "；肘部拉回权重 " << Num(params.null_space_tracking) << std::endl;
+                  << (params.passive ? std::string(kLockRotation ? "X Y Z" : "六轴") + "被动零力控制（kStiffnessScale 不起作用）"
+                                     : "刚度 [" + rdk::utility::Arr2Str(arm1_float_K, 1) + "]（"
+                                           + (kLockRotation ? "X Y Z" : "六轴") + " × " + Num(params.stiffness_scale) + "）")
+                  << (kLockRotation ? "；Rx Ry Rz 锁定：名义刚度、姿态不跟随" : "") << "；肘部拉回权重 "
+                  << Num(params.null_space_tracking) << std::endl;
         // 打印 ARM_2 离位置极限最近的关节，排查 hold 时被推动的原因。
         const auto& q_min = info.q_min.at(rdk::JointGroup::ARM_2);
         const auto& q_max = info.q_max.at(rdk::JointGroup::ARM_2);
@@ -638,12 +589,16 @@ int main(int argc, char* argv[])
 
         if (WaitWarmup(*robot) && !g_stop) {
             // 切到浮动：实时模式里的参数设置，不切换控制模式；实时任务照常每 1 ms 给两条臂发指令。
+            // 先让目标位姿跟随实测位姿，再降刚度：降的那一下不会被拉回起点。
+            g_arm1_follow = true;
             if (params.passive) {
-                robot->SetForceControlAxis(rdk::JointGroup::ARM_1, {true, true, true, true, true, true});  // 目标力 0。
+                robot->SetForceControlAxis(rdk::JointGroup::ARM_1,  // 目标力 0；Rx Ry Rz 锁定时不做力控，照样位置控制。
+                    {true, true, true, !kLockRotation, !kLockRotation, !kLockRotation});
             } else {
                 robot->SetCartesianImpedance(rdk::JointGroup::ARM_1, arm1_float_K);
             }
-            std::cout << "ARM_1 已浮动，可以手拖；ARM_2 hold 不动。按 Ctrl+C 结束。" << std::endl;
+            std::cout << "ARM_1 已浮动，" << (kLockRotation ? "X Y Z 可以手拖、Rx Ry Rz 锁定" : "六个方向都可以手拖")
+                      << "：目标跟随实测位置，松手停在原地；ARM_2 hold 不动。按 Ctrl+C 结束。" << std::endl;
             if (log.is_open()) {
                 WriteLogHeader(log);
                 logging = true;
@@ -659,9 +614,10 @@ int main(int argc, char* argv[])
                 RequestStop(reason);
                 break;
             }
+            ++rt_mode_checks;  // 走到这里说明这次查到的控制模式仍是 RT_CARTESIAN_MOTION_FORCE。
+            drag_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - float_start).count();
             if (logging) {  // 文件读写在主线程，不在实时任务里。
-                WriteLogRow(log, std::chrono::duration<double>(std::chrono::steady_clock::now() - float_start).count(),
-                    robot->states().at(rdk::JointGroup::ARM_1));
+                WriteLogRow(log, drag_seconds, robot->states().at(rdk::JointGroup::ARM_1));
             }
             std::this_thread::sleep_for(kMonitorPeriod);
         }
@@ -693,6 +649,11 @@ int main(int argc, char* argv[])
     if (record_ready) {
         std::cout << "③ 期间 ARM_2 最大偏离 hold 位置：[" << rdk::utility::Arr2Str(arm2_record.max_error, 4)
                   << "] rad；最大速度：[" << rdk::utility::Arr2Str(arm2_record.max_vel, 3) << "] rad/s" << std::endl;
+    }
+    if (rt_mode_checks > 0) {
+        std::cout << "拖动 " << Num(drag_seconds) << " 秒期间主线程每 " << kMonitorPeriod.count() << " ms 查一次控制模式，"
+                  << rt_mode_checks << " 次都是 RT_CARTESIAN_MOTION_FORCE；③ 实时任务共发出 " << g_sent_count.load()
+                  << " 次 StreamCartesianMotionForce（实时接口，1 kHz）" << std::endl;
     }
     if (logging) {
         log.close();

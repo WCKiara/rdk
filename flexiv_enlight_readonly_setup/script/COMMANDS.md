@@ -84,11 +84,13 @@ sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --p
 
 ## 运行 RT 六维笛卡尔浮动（intermediate8）
 
-ARM_1 末端 X Y Z、Rx Ry Rz 六个方向都能拖；ARM_2 全程不动。流程和上面两个程序一样：① 回正 → ② 受力回 0 → ③ 实时模式。每次给 ARM_1 发指令都同时给 ARM_2 发 hold；③ 从开始到 Ctrl+C 一直是实时模式，不切换。
+ARM_1 末端 X Y Z 能拖，Rx Ry Rz 锁定（源码 `kLockRotation = true`，改成 `false` 重新编译后六个方向都能拖）；ARM_2 全程不动。流程和上面两个程序一样：① 回正 → ② 受力回 0 → ③ 实时模式。每次给 ARM_1 发指令都同时给 ARM_2 发 hold；③ 从开始到 Ctrl+C 一直是实时模式，不切换。
 
-③ 开始后 ARM_1 先用名义刚度保持约 0.1 秒，然后降刚度。看到"ARM_1 已浮动"之后就可以拖。降刚度那一下要扶住 ARM_1。
+③ 开始后 ARM_1 先用名义刚度保持约 0.1 秒，然后降刚度。看到"ARM_1 已浮动"之后就可以拖。降刚度那一下要扶住 ARM_1。浮动时 ARM_1 的目标跟随实测位姿：拖到哪里，松手就停在哪里，不会弹回起点。`--scale` 越小，阻力越小。
 
-第一次编译前先重新配置（`CMakeLists.txt` 新加了这个目标）。按刚度从高到低，一次跑一条：
+这个程序不设速度、位置限位类的停机检查：拖得多快、多远都不会被程序停下，ARM_2 偏离 hold 位置也不停机（结束时照样打印偏离）。只有 E-stop 和控制器自带的保护能停住机器人，拖动时手放在 E-stop 旁边。拖动期间全程是实时模式 `RT_CARTESIAN_MOTION_FORCE`，结束时会打印一行控制模式检查结果确认这一点。
+
+第一次编译前先重新配置（`CMakeLists.txt` 新加了这个目标）。按 `--scale` 从高到低（阻力从大到小），一次跑一条：
 
 ```bash
 sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.10
@@ -102,14 +104,14 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 
 | 选项 | 作用 |
 |---|---|
-| `--scale=S` | ARM_1 六轴刚度占名义刚度的比例，范围 0–1，默认 0.10。0 是零刚度浮动 |
+| `--scale=S` | ARM_1 X Y Z 刚度占名义刚度的比例，范围 0–1，默认 0.10（Rx Ry Rz 锁定，不受影响）。目标跟随实测位置，所以它决定的是阻尼，越小越透明。0 是无阻尼浮动，没人推会越漂越快 |
 | `--nullspace=W` | 肘部被拉回起始姿态的权重，范围 0.1–1，默认 0.5 |
 | `--log=FILE.csv` | 浮动期间 100 Hz 记录 ARM_1 的末端位姿、速度、外力和关节状态 |
-| `--passive` | 六轴被动零力。需要六维力传感器，这台没有，会在上伺服之前直接退出 |
+| `--passive` | X Y Z 被动零力，Rx Ry Rz 照样锁定，不需要六维力传感器。`kLockRotation = false` 时是六轴被动零力，需要六维力传感器，这台没有，会在上伺服之前直接退出 |
 | `--no-home` | 跳过回正 |
 | `--clear-fault` | 启动时有故障先尝试清除 |
 
-要长期改默认值，改源码里"透明度参数：在这里调"一段的 `kStiffnessScale`、`kNullSpaceRefTracking`、`kPassiveForceControl`。停下来之后怎么看原因，同上面的"停下来之后"。详细说明见 [README_cartesian_floating.md](README_cartesian_floating.md)。
+要长期改默认值，改源码里"透明度参数：在这里调"一段的 `kStiffnessScale`、`kNullSpaceRefTracking`、`kPassiveForceControl`、`kLockRotation`。停下来之后怎么看原因，同上面的"停下来之后"。详细说明见 [README_cartesian_floating.md](README_cartesian_floating.md)。
 
 ## 清除故障
 

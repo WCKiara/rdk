@@ -2,13 +2,16 @@
 
 `intermediate8_realtime_cartesian_floating.cpp` 是所附方案（RT 六维笛卡尔浮动）按本机重写的版本。方案原文件 `third_party/flexiv_rdk/example/intermediate8_realtime_cartesian_floating.cpp` 和 `example/CMakeLists.txt` 不动，只编译 `script/` 下这份。
 
-## 控制方法：照方案
+## 控制方法：照方案，只有一处不同
 
-- ARM_1 六个笛卡尔轴都做位置控制。目标位姿固定为进入实时模式时的位姿，不跟随实测位姿，也不自己解 IK。
-- 刚度降到 `K_x_nom × --scale`，0 就是六维零刚度浮动。阻尼比保持 RDK 名义值 0.7。
-- `--passive`：六轴被动零力控制，目标力 0。
+- ARM_1 六个笛卡尔轴都做位置控制，不自己解 IK。
+- **和方案不同：** 降刚度之后，ARM_1 的目标位姿每 1 ms 跟随实测位姿。方案的目标位姿一直锁在进入实时模式时的位姿，2026-11-03 实测刚度 0.10 时 ARM_1 像被弹簧拴在起点，推不动、松手弹回。跟随之后弹簧力约为 0，只剩阻尼：哪里都能拖，松手停在原地；没人推时是匀速漂，不会越漂越快。预热阶段（名义刚度）目标仍然锁在起点。
+- 刚度降到 `K_x_nom × --scale`，阻尼比保持 RDK 名义值 0.7。因为目标跟随实测位姿，`--scale` 实际决定的是阻尼（阻尼 = 2 × 0.7 × √(刚度 × 惯量)），越小越透明。0 时阻尼也是 0，没人推会越漂越快；程序不设速度限位，只能靠 E-stop 和控制器自带的保护停。
+- ARM_2 的零空间跟踪权重设为上限 1.0（RDK 默认 0.5）。11-03 实测默认值下 ARM_2 的 J1、J3 在零空间里反向漂，约 4 秒超过当时 0.01 rad 的停机检查（这个检查现已去掉）。
+- **Rx Ry Rz 锁定（2026-11-03 加，源码 `kLockRotation = true`）：** 浮动时姿态目标一直是进入 ③ 时的姿态、不跟随实测姿态，转动刚度保持名义刚度 `K_x_nom`（RDK 允许的最大值），只有 X Y Z 能拖。改成 `false` 重新编译后六轴都浮动。
+- `--passive`：X Y Z 被动零力控制，目标力 0；Rx Ry Rz 照样锁定。`kLockRotation = false` 时六轴都做被动零力控制。
 - 先用名义刚度成功发满 100 次实时指令，再降刚度。
-- ARM_1 的监测阈值照方案（见下表）。
+- **和方案不同：** 不设方案里的速度、位置限位类停机检查（2026-11-03 按要求去掉），见下方"停机条件"。
 
 ## 运行流程：照 `arm1_transparent_arm2_hold_rt.cpp`
 
@@ -17,14 +20,14 @@
 3. ① 回正：一条原语指令 `{ARM_1: Home, ARM_2: Hold}`（`--no-home` 跳过）。
 4. ② 受力回 0：一条原语指令 `{ARM_1: ZeroFTSensor, ARM_2: Hold}`。
 5. ③ 切到 `RT_CARTESIAN_MOTION_FORCE`，从这里到结束一直是实时模式，不再切换。每 1 ms 的 `StreamCartesianMotionForce` 同时带两条臂：ARM_1 的浮动指令，ARM_2 的 hold 位姿（6 轴纯位置控制、名义刚度，目标是进入 ③ 时的位姿）。
-6. 发满 100 次后，在实时模式里把 ARM_1 刚度降下来（或开六轴被动力控）。这是参数设置，不切换控制模式，两条臂的指令照常每 1 ms 发。
-7. Ctrl+C 或任一检查不通过：先停实时任务，再 `Stop()`，机器人进入 IDLE 并保持当前位置。最后打印 ③ 期间 ARM_2 的最大偏离和速度。
+6. 发满 100 次后，ARM_1 的目标位置改成跟随实测位置（Rx Ry Rz 锁定时姿态不跟随），再在实时模式里把 ARM_1 的 X Y Z 刚度降下来（或开 X Y Z 被动力控）。这是参数设置，不切换控制模式，两条臂的指令照常每 1 ms 发。
+7. Ctrl+C 或机器人不能继续（见"停机条件"）：先停实时任务，再 `Stop()`，机器人进入 IDLE 并保持当前位置。最后打印 ③ 期间 ARM_2 的最大偏离和速度，以及拖动期间的控制模式检查结果。
 
 每次给 ARM_1 发指令都同时给 ARM_2 发 hold，不单独控制一条臂。
 
 另外两处：
 
-- `--passive` 在上伺服之前检查 ARM_1 的 `raw_ft_sensor`（RDK：没装力传感器时为 0）。这台机器 Rx/Ry/Rz 力矩控制会被拒绝，检查到 0 就直接退出，机器人不动。
+- `--passive` 在上伺服之前检查 ARM_1 的 `raw_ft_sensor`（RDK：没装力传感器时为 0）。这台机器 Rx/Ry/Rz 力矩控制会被拒绝，检查到 0 就直接退出，机器人不动。只在 `kLockRotation = false` 时检查：锁定时 Rx Ry Rz 不做力控，用不到六维力传感器。
 - `--log=FILE.csv`：浮动期间由主线程按 100 Hz 记录，实时任务里不读写文件。
 
 ## 编译
@@ -48,9 +51,9 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 
 | 选项 | 作用 |
 |---|---|
-| `--scale=S` | ARM_1 六轴刚度 = `K_x_nom × S`，范围 [0, 1]，默认 0.10 |
+| `--scale=S` | ARM_1 X Y Z 刚度 = `K_x_nom × S`，范围 [0, 1]，默认 0.10。Rx Ry Rz 锁定，不受影响 |
 | `--nullspace=W` | 肘部（零空间）拉回进入 ③ 时姿态的权重，范围 [0.1, 1]，默认 0.5。0.1 是 RDK 允许的最小值，不等于关闭零空间控制 |
-| `--passive` | 六轴被动零力控制，此时 `--scale` 不起作用。需要六维力传感器，本机没有 |
+| `--passive` | X Y Z 被动零力控制，此时 `--scale` 不起作用；Rx Ry Rz 照样锁定。`kLockRotation = false` 时六轴，需要六维力传感器，本机没有 |
 | `--log=FILE.csv` | 浮动期间 100 Hz 记录 ARM_1 的 `tcp_pose`、`tcp_twist`、`tcp_wrench`、`q`、`dtheta`。文件属主是 root |
 | `--no-home` | 跳过 ① 回正，在当前姿态受力回 0 后直接浮动 |
 | `--clear-fault` | 启动时有故障先尝试清除；不加则直接退出 |
@@ -64,19 +67,26 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 
 在本机比较被动力控的手感，用 `arm1_transparent_arm2_hold_rt_cartesian --passive`：X Y Z 被动零力，Rx Ry Rz 零转动刚度，见 [COMMANDS.md](COMMANDS.md)。
 
-## 监测阈值
+## 停机条件
 
-示例值，不是 Flexiv 认证的安全限值。
+程序不设速度、位置限位类的停机检查。ARM_1 末端速度、离起点的位移、关节离极限的余量、关节速度，以及 ARM_2 偏离 hold 位置，都不检查。ARM_2 的偏离仍然记录，结束时打印。拖动时手放在 E-stop 旁边。控制器自带的保护（关节硬极限、安全设置里的限速、碰撞检测等）RDK 关不掉，照常有效。
 
-| 项目 | 阈值 | 何时检查 |
+程序只在机器人自己不能继续时停：
+
+| 项目 | 条件 | 何时检查 |
 |---|---|---|
-| ARM_1 末端线速度 / 角速度 | 0.20 m/s / 0.70 rad/s | ③ |
-| ARM_1 末端离进入 ③ 时的位置 | 0.20 m | ③ |
-| ARM_1 关节离位置极限 | 0.12 rad（进入 ③ 时就不到则不开始） | ③ |
-| ARM_1 关节速度 | `dq_max` 的 30% | ③ |
-| ARM_2 关节离开 hold 位置 | 0.01 rad | ①②③ |
+| 断线、E-stop、故障、未就绪、实时指令迟到过多 | 检测到即停 | ①②③ |
+| 控制模式被切走 | ①② 不是 `NRT_PRIMITIVE_EXECUTION`，③ 不是 `RT_CARTESIAN_MOTION_FORCE` | ①②③ |
 | 实时任务心跳 | 100 ms 没有成功发出指令 | ③ |
-| 断线、E-stop、故障、未就绪、控制模式被切走、实时指令迟到过多 | 检测到即停 | ①②③ |
+
+## 拖动期间全程实时模式
+
+只有 ①② 用非实时模式 `NRT_PRIMITIVE_EXECUTION`（Home、ZeroFTSensor 只有原语版本），这时 ARM_1 由原语控制，不能拖。拖动只在 ③：
+
+- ③ 开头切到 `RT_CARTESIAN_MOTION_FORCE` 之后，直到结束时 `Stop()`（进入 IDLE），程序没有再切换控制模式。
+- ARM_1 的指令由 1 kHz 实时调度器每 1 ms 发一次 `StreamCartesianMotionForce`（实时接口）。降刚度用的 `SetCartesianImpedance` 只是实时模式里的参数设置，不切换控制模式。
+- 主线程每 10 ms 查一次控制模式，不是 `RT_CARTESIAN_MOTION_FORCE` 就停机，并打印"控制模式被切到 ……"。
+- 结束时打印一行"拖动 X 秒期间主线程每 10 ms 查一次控制模式，N 次都是 RT_CARTESIAN_MOTION_FORCE；③ 实时任务共发出 M 次 StreamCartesianMotionForce"。M 大约是 ③ 的秒数 × 1000。
 
 正常 Ctrl+C 结束时没有"已停止"这一行，退出码 0。"已停止：……"后面是停机原因，退出码 1。参数错误或没有 root，退出码 2。
 
