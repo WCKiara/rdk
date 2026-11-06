@@ -1,4 +1,5 @@
-// RT 笛卡尔浮动：ARM_1 末端 X Y Z 能手拖，尽可能透明；Rx Ry Rz 由 kLockRotation 锁定（false 时六个方向都能拖）；ARM_2 全程不动。
+// RT 笛卡尔浮动：ARM_1 末端 X Y Z Rx Ry Rz 每个轴由 kLockX … kLockRz 决定能拖还是锁定（默认 X Y Z 能拖、Rx Ry Rz 锁定），
+// 能拖的轴尽可能透明；ARM_2 全程不动。
 // 控制方法照所附方案（原始版本 third_party/flexiv_rdk/example/intermediate8_realtime_cartesian_floating.cpp，不改它），
 // 运行流程照 arm1_transparent_arm2_hold_rt.cpp：
 //   ① 回正：ARM_1 跑 Home 原语回到 home 姿态（--no-home 跳过）；
@@ -11,9 +12,9 @@
 //
 // ③ 实时调度器每 1 ms 给两条臂各发一次末端指令（StreamCartesianMotionForce），由控制器内置的运动-力统一控制器跟踪：
 //   ARM_1：目标力 0，不自己解 IK。先用名义刚度 K_x_nom、目标位姿锁在进入 ③ 时的末端位姿，成功发满 kWarmupCycles 次，
-//          确认实时指令一直在发；然后目标位置改成每 1 ms 跟随实测位置，再把 X Y Z 刚度降到 K_x_nom × kStiffnessScale，
-//          或者 --passive 开 X Y Z 被动零力控制。Rx Ry Rz 锁定（kLockRotation）：姿态目标不跟随、刚度保持 K_x_nom；
-//          不锁定时六轴都这样浮动。降刚度、开力控都是实时模式里的参数设置，不切换控制模式，两条臂的指令照常发。
+//          确认实时指令一直在发；然后能拖的轴（kLockX … kLockRz 为 false）目标每 1 ms 跟随实测值，再把这些轴的刚度
+//          降到 K_x_nom × kStiffnessScale，或者 --passive 给这些轴开被动零力控制。锁定的轴目标不跟随、刚度保持 K_x_nom。
+//          降刚度、开力控都是实时模式里的参数设置，不切换控制模式，两条臂的指令照常发。
 //          跟随实测位姿是和所附方案不同的地方：方案的目标位姿一直锁在起点，刚度 0.10 时 ARM_1 像被弹簧拴住，推不动、
 //          松手弹回（11-03 实测）。跟随之后弹簧力约为 0，只剩阻尼：哪里都能拖，松手停在原地，没人推时是匀速漂、不会越漂越快。
 //   ARM_2：6 轴纯位置控制、名义刚度，目标位姿一直是进入 ③ 时的末端位姿（官方 intermediate5 的 --hold）。
@@ -27,6 +28,7 @@
 #include <flexiv/rdk/scheduler.hpp>
 #include <flexiv/rdk/utility.hpp>
 
+#include <Eigen/Geometry>  // FollowPose 的四元数运算；RDK 本身依赖 Eigen 3.4。
 #include <unistd.h>  // geteuid：检查是否以 root 运行。
 // 输出用 std::cout 而不是 spdlog：/usr/local/include 里的 fmt 10 会盖住系统 spdlog 1.9 需要的 fmt 8，编不过。
 
@@ -56,30 +58,45 @@ constexpr size_t kDoF = rdk::kSerialJointDoF;  // 每条臂的关节数，7。
 
 // ================================ 透明度参数：在这里调 ================================
 // 都是 RDK 的官方参数，也可以用命令行参数临时覆盖，不用重新编译。
-// kStiffnessScale：ARM_1 X Y Z 笛卡尔刚度 = K_x_nom × kStiffnessScale（kLockRotation = false 时六轴都是；SetCartesianImpedance
-//   的 K_x，K_x_nom 启动时打印）。
-//   范围 0–1；0 = 六维零刚度浮动，最透明（文档："Setting motion stiffness of a motion-controlled Cartesian axis to 0 will
+// kStiffnessScale：ARM_1 能拖的轴（kLockX … kLockRz 为 false）的笛卡尔刚度 = K_x_nom × kStiffnessScale
+//   （SetCartesianImpedance 的 K_x，K_x_nom 启动时打印）；锁定的轴保持 K_x_nom。
+//   范围 0–1；0 = 零刚度浮动，最透明（文档："Setting motion stiffness of a motion-controlled Cartesian axis to 0 will
 //   make this axis free-floating"）。方案建议 0.10 → 0.05 → 0.02 → 0.00 一档一档降。命令行 --scale=S。
 //   阻尼比 Z_x 用 RDK 默认 0.7：文档警告改它可能不稳定。
 //   浮动时目标位置跟随实测位置，刚度几乎不产生弹簧力，实际起作用的是阻尼：按阻尼比的定义，阻尼 = 2 × 0.7 × √(刚度 × 惯量)，
 //   所以比例越小阻尼越小、越透明；0 时阻尼也是 0，没人推会越漂越快。程序不设速度限位，只能靠 E-stop 和控制器自带的保护停。
-constexpr double kStiffnessScale = 0.10;
+constexpr double kStiffnessScale = 0.0;
 // kNullSpaceRefTracking：SetNullSpaceObjectives 的 ref_positions_tracking，肘部（零空间）拉回进入 ③ 时关节姿态的权重。
 //   范围 0.1–1.0，RDK 默认 0.5；越小肘部越自由。0.1 是最小值，不等于关掉零空间控制。另外两个权重用 RDK 默认 0。
 //   命令行 --nullspace=W。
-constexpr double kNullSpaceRefTracking = 0.5;
-// kPassiveForceControl：true = 六轴被动零力控制（方案的 passive zero-wrench）：SetPassiveForceControl 打开，六轴都做力控、
-//   目标力 0，只前馈 0 力，不加主动力控的阻尼；此时 kStiffnessScale 不起作用，SetForceControlAxis 的线速度保护也不起作用。
+constexpr double kNullSpaceRefTracking = 0.1;
+// kPassiveForceControl：true = 被动零力控制（方案的 passive zero-wrench）：SetPassiveForceControl 打开，能拖的轴做力控、
+//   目标力 0，只前馈 0 力，不加主动力控的阻尼；锁定的轴照样位置控制。此时 kStiffnessScale 不起作用，
+//   SetForceControlAxis 的线速度保护也不起作用。
 //   Rx Ry Rz 力矩控制要 6 维力传感器：10-30 实测这台报错 "moment control is only available with 6DoF F/T sensor"，
-//   所以 kLockRotation = false 时启动检查到没有力传感器就退出；kLockRotation 时只有 X Y Z 做力控，不用 6 维力传感器。
+//   所以 Rx Ry Rz 里有能拖的轴时，启动检查到没有力传感器就退出；Rx Ry Rz 都锁定时只有 X Y Z 做力控，不用 6 维力传感器。
 //   命令行 --passive。
 constexpr bool kPassiveForceControl = false;
-// kLockRotation：true = 锁定 ARM_1 末端 Rx Ry Rz，只有 X Y Z 能拖。浮动时这 3 轴的目标姿态一直是进入 ③ 时的姿态（不跟随实测姿态），
-//   刚度保持名义刚度 K_x_nom（RDK 允许的最大值），和 ARM_2 hold 一样硬；--passive 时也只有 X Y Z 做力控。
-//   false = 六轴都浮动。没有命令行参数，改了要重新编译。
-constexpr bool kLockRotation = true;
-// 目标位姿（预热时是进入 ③ 时的位姿；浮动时位置跟随实测位置，姿态 kLockRotation 时不跟随）、目标力固定为 0，不是参数。
+// kLockX … kLockRz：ARM_1 末端每个轴锁不锁，没有命令行参数，改了要重新编译。
+//   true = 锁定：这个轴的目标一直是进入 ③ 时的值（不跟随实测），刚度保持名义刚度 K_x_nom（RDK 允许的最大值），
+//          和 ARM_2 hold 一样硬；--passive 时也不做力控。
+//   false = 能拖：目标跟随实测值，刚度 = K_x_nom × kStiffnessScale；--passive 时做零力控制。
+//   都是世界坐标系的轴：RDK 的笛卡尔运动控制一直用世界坐标系，和 SetCartesianImpedance 的 K_x 同一个顺序。
+//   转动轴锁定的意思是：从进入 ③ 时的姿态转到当前姿态的旋转向量（世界坐标系）在这个轴上的分量拉回 0，见 FollowPose。
+//   默认和原来的 kLockRotation = true 一样：X Y Z 能拖，Rx Ry Rz 锁定。
+constexpr bool kLockX = false;
+constexpr bool kLockY = false;
+constexpr bool kLockZ = false;
+constexpr bool kLockRx = false;
+constexpr bool kLockRy = false;
+constexpr bool kLockRz = false;
+// 目标位姿（预热时是进入 ③ 时的位姿；浮动时能拖的轴跟随实测值，锁定的轴不跟随）、目标力固定为 0，不是参数。
 // ====================================================================================
+
+// 程序内部用，由上面 6 个参数得出，不用改：按 X Y Z Rx Ry Rz 排列。
+constexpr std::array<bool, rdk::kCartDoF> kLockAxis = {kLockX, kLockY, kLockZ, kLockRx, kLockRy, kLockRz};
+constexpr bool kAnyRotationFree = !kLockRx || !kLockRy || !kLockRz;  // Rx Ry Rz 里至少一个能拖。
+constexpr bool kAllRotationFree = !kLockRx && !kLockRy && !kLockRz;  // Rx Ry Rz 三个都能拖。
 
 // ===== ③ ARM_2 hold：发给机器人，只影响 ARM_2，不影响 ARM_1 手感 =====
 // kArm2NullSpaceRefTracking：ARM_2 的 SetNullSpaceObjectives ref_positions_tracking，肘部拉回 hold 姿态的权重。
@@ -129,9 +146,9 @@ struct Arm2Record  // ③ 期间 ARM_2 最大偏离 hold 位置 [rad] 和最大�
 
 struct RtTargets  // ③ 的指令和记录用的数据：进入 ③ 时定好，调度器启动后只有实时任务读写，主线程不再碰。
 {
-    // 每 1 ms 发出的两条臂指令。g_arm1_follow 之后实时任务每次把 ARM_1 的目标位置（kLockRotation = false 时连姿态）
-    // 换成实测值，其余不变。
+    // 每 1 ms 发出的两条臂指令。g_arm1_follow 之后实时任务每次用 FollowPose 更新 ARM_1 的目标位姿，其余不变。
     std::map<rdk::JointGroup, rdk::RtCartesianCmd> commands;
+    std::array<double, rdk::kPoseSize> arm1_start_pose = {};  // 进入 ③ 时 ARM_1 的末端位姿：锁定的轴一直用它。
     std::vector<double> arm2_q;  // ARM_2 hold 时的关节位置 [rad]，只用来记录 ARM_2 动了多少，不停机。
 };
 
@@ -146,10 +163,10 @@ void PrintHelp()
 {
     std::cout << "用法：sudo .build/script/intermediate8_realtime_cartesian_floating <序列号> [选项]\n"
                  "  <序列号>          完整序列号，不要有空格，例如 Enlight-LL-123456\n"
-                 "  --scale=S         覆盖 kStiffnessScale：ARM_1 X Y Z 刚度占名义刚度的比例 [0, 1]（Rx Ry Rz 由 kLockRotation\n"
-                 "                    锁定）；目标跟随实测位置，实际决定阻尼，越小越透明；0 = 无阻尼浮动\n"
+                 "  --scale=S         覆盖 kStiffnessScale：ARM_1 能拖的轴（kLockX … kLockRz 为 false）的刚度占名义刚度的\n"
+                 "                    比例 [0, 1]；目标跟随实测值，实际决定阻尼，越小越透明；0 = 无阻尼浮动\n"
                  "  --nullspace=W     覆盖 kNullSpaceRefTracking：肘部拉回参考姿态的权重 [0.1, 1]\n"
-                 "  --passive         覆盖 kPassiveForceControl：X Y Z 被动零力控制（kLockRotation = false 时六轴，\n"
+                 "  --passive         覆盖 kPassiveForceControl：能拖的轴做被动零力控制（Rx Ry Rz 里有能拖的轴时\n"
                  "                    要 6 维力传感器）\n"
                  "  --log=FILE.csv    ③ 浮动期间按 100 Hz 记录 ARM_1 的末端位姿、速度、外力和关节位置、速度\n"
                  "  --no-home         不先回正，在当前姿态受力回 0 后直接浮动\n"
@@ -162,6 +179,18 @@ std::string Num(double value)  // 数字转成最短的文字，例如 10、0.05
     std::ostringstream oss;
     oss << value;
     return oss.str();
+}
+
+std::string AxisNames(bool locked)  // kLockAxis 里等于 locked 的轴，例如 "X Y Z"；一个都没有时是 "无"。
+{
+    static const std::array<std::string, rdk::kCartDoF> kNames = {"X", "Y", "Z", "Rx", "Ry", "Rz"};
+    std::string text;
+    for (size_t i = 0; i < rdk::kCartDoF; ++i) {
+        if (kLockAxis[i] == locked) {
+            text += (text.empty() ? "" : " ") + kNames[i];
+        }
+    }
+    return text.empty() ? "无" : text;
 }
 
 bool ParseNumber(const char* text, double& value)  // 整个字符串是一个有限的数才算成功。
@@ -251,6 +280,47 @@ int64_t NowNs()  // steady_clock 的当前时刻 [ns]：实时线程记录、主
         .count();
 }
 
+// 浮动时 ARM_1 的目标位姿：能拖的轴跟随实测值 measured，锁定的轴保持 start（进入 ③ 时的位姿），结果写进 pose_d。
+// 位姿都是 RDK 的 [x y z qw qx qy qz]，世界坐标系。每 1 ms 在实时任务里调用，只用固定大小的数据，不分配内存。
+void FollowPose(const std::array<double, rdk::kPoseSize>& measured, const std::array<double, rdk::kPoseSize>& start,
+    std::array<double, rdk::kPoseSize>& pose_d)
+{
+    for (size_t i = 0; i < 3; ++i) {  // X Y Z 各管各的。
+        pose_d[i] = kLockAxis[i] ? start[i] : measured[i];
+    }
+    if (!kAnyRotationFree) {  // Rx Ry Rz 都锁定：姿态一直是进入 ③ 时的值（原来 kLockRotation = true 的做法）。
+        std::copy_n(start.begin() + 3, 4, pose_d.begin() + 3);
+        return;
+    }
+    if (kAllRotationFree) {  // Rx Ry Rz 都能拖：姿态跟随实测值。
+        std::copy_n(measured.begin() + 3, 4, pose_d.begin() + 3);
+        return;
+    }
+    // 只锁一部分转动轴：姿态是一个整体，不能逐个分量拷贝。e = 起始姿态 × 实测姿态⁻¹ 的旋转向量（世界坐标系，从实测姿态
+    // 转回起始姿态），把能拖的轴上的分量清零得到 e_lock，目标姿态 = exp(e_lock) × 实测姿态。这样控制器看到的姿态误差
+    // 正好是 e_lock：锁定的轴被拉回，能拖的轴上没有弹簧力。
+    const Eigen::Quaterniond q_start = Eigen::Quaterniond(start[3], start[4], start[5], start[6]).normalized();
+    const Eigen::Quaterniond q_meas = Eigen::Quaterniond(measured[3], measured[4], measured[5], measured[6]).normalized();
+    const Eigen::AngleAxisd error(q_start * q_meas.conjugate());
+    Eigen::Vector3d e_lock = error.angle() * error.axis();
+    for (Eigen::Index i = 0; i < 3; ++i) {
+        if (!kLockAxis[static_cast<size_t>(3 + i)]) {
+            e_lock[i] = 0.0;
+        }
+    }
+    Eigen::Quaterniond q_d = q_meas;
+    if (const double angle = e_lock.norm(); angle > 0.0) {
+        q_d = Eigen::Quaterniond(Eigen::AngleAxisd(angle, e_lock / angle)) * q_meas;
+    }
+    if (q_d.dot(q_meas) < 0.0) {  // q 和 -q 是同一个姿态，取和实测值同号的那个。
+        q_d.coeffs() *= -1.0;
+    }
+    pose_d[3] = q_d.w();
+    pose_d[4] = q_d.x();
+    pose_d[5] = q_d.y();
+    pose_d[6] = q_d.z();
+}
+
 // 实时任务：每 1 ms 记录一次 ARM_2 的偏离（不停机），然后把两条臂的末端指令放进同一条 StreamCartesianMotionForce 发出去。
 void PeriodicTask(rdk::Robot& robot, RtTargets& targets, Arm2Record& record)
 {
@@ -270,12 +340,11 @@ void PeriodicTask(rdk::Robot& robot, RtTargets& targets, Arm2Record& record)
             record.max_vel[i] = std::max(record.max_vel[i], std::abs(arm2.dtheta[i]));
         }
 
-        // ARM_1：预热时是进入 ③ 时的位姿，浮动时位置是实测位置；目标力 0、目标速度 0，所以只剩阻尼挡着手。
-        //        kLockRotation 时只拷贝 x y z，姿态（四元数）一直是进入 ③ 时的值，Rx Ry Rz 就锁在那里。
+        // ARM_1：预热时是进入 ③ 时的位姿；浮动时能拖的轴跟随实测值，锁定的轴保持进入 ③ 时的值（FollowPose）。
+        //        目标力 0、目标速度 0，所以能拖的轴只剩阻尼挡着手。
         // ARM_2：进入 ③ 时的位姿，就是 hold。两条臂每次都一起发。
         if (g_arm1_follow) {
-            std::copy_n(arm1.tcp_pose.begin(), kLockRotation ? 3 : rdk::kPoseSize,
-                targets.commands.at(rdk::JointGroup::ARM_1).pose_d.begin());
+            FollowPose(arm1.tcp_pose, targets.arm1_start_pose, targets.commands.at(rdk::JointGroup::ARM_1).pose_d);
         }
         robot.StreamCartesianMotionForce(targets.commands);
         g_last_sent_ns = NowNs();
@@ -343,13 +412,13 @@ void Prepare(rdk::Robot& robot, const Params& params)  // 连接后的检查和�
     if (!robot.all_stopped()) {  // 有别的程序在动机器人时不接管。
         throw std::runtime_error("机器人还在运动；先停止其他控制程序");
     }
-    // 只有 Rx Ry Rz 力矩控制要 6 维力传感器（10-30 实测），Rx Ry Rz 锁定时不用。
+    // 只有 Rx Ry Rz 力矩控制要 6 维力传感器（10-30 实测），Rx Ry Rz 都锁定时不用。
     // 上伺服、回正之前就检查，免得回正完才被拒绝。RDK：没装力传感器时 raw_ft_sensor 为 0。
-    if (params.passive && !kLockRotation) {
+    if (params.passive && kAnyRotationFree) {
         const auto ft = robot.states().at(rdk::JointGroup::ARM_1).raw_ft_sensor;
         if (std::all_of(ft.begin(), ft.end(), [](double v) { return v == 0.0; })) {
-            throw std::runtime_error(
-                "--passive 要 ARM_1 有 6 维力传感器（raw_ft_sensor 全为 0，没装）；改用 --scale=0 做六维零刚度浮动");
+            throw std::runtime_error("Rx Ry Rz 里有能拖的轴时，--passive 要 ARM_1 有 6 维力传感器（raw_ft_sensor 全为 0，"
+                                     "没装）；去掉 --passive 用 --scale，或者把 kLockRx、kLockRy、kLockRz 都设成 true");
         }
     }
     if (!robot.operational()) {
@@ -502,10 +571,10 @@ int main(int argc, char* argv[])
         Prepare(*robot, params);
         const auto info = robot->info();
         const auto& arm1_K_nom = info.K_x_nom.at(rdk::JointGroup::ARM_1);
-        // ARM_1 浮动时的刚度：X Y Z = K_x_nom × stiffness_scale；Rx Ry Rz 锁定时保持 K_x_nom，不锁定时也乘比例。
+        // ARM_1 浮动时的刚度：能拖的轴 = K_x_nom × stiffness_scale，锁定的轴保持 K_x_nom。
         auto arm1_float_K = arm1_K_nom;
         for (size_t i = 0; i < arm1_float_K.size(); ++i) {
-            if (i < 3 || !kLockRotation) {
+            if (!kLockAxis[i]) {
                 arm1_float_K[i] *= params.stiffness_scale;
             }
         }
@@ -557,15 +626,17 @@ int main(int argc, char* argv[])
         robot->SetNullSpacePosture(rdk::JointGroup::ARM_1, arm1.q);  // 肘部参考姿态 = 进入 ③ 时的姿态。
         robot->SetNullSpacePosture(rdk::JointGroup::ARM_2, arm2.q);  // 切模式时已自动设成当前姿态，这里写明，和 hold 位置一致。
         targets.arm2_q = arm2.q;
+        targets.arm1_start_pose = arm1.tcp_pose;
         targets.commands = {
             {rdk::JointGroup::ARM_1, rdk::RtCartesianCmd(arm1.tcp_pose, {0.0, 0.0, 0.0, 0.0, 0.0, 0.0})},
             {rdk::JointGroup::ARM_2, rdk::RtCartesianCmd(arm2.tcp_pose)},  // 只给位姿，就是纯位置控制。
         };
-        std::cout << "ARM_1：名义刚度 K_x_nom [" << rdk::utility::Arr2Str(arm1_K_nom, 1) << "] N/m、Nm/rad；浮动时"
-                  << (params.passive ? std::string(kLockRotation ? "X Y Z" : "六轴") + "被动零力控制（kStiffnessScale 不起作用）"
-                                     : "刚度 [" + rdk::utility::Arr2Str(arm1_float_K, 1) + "]（"
-                                           + (kLockRotation ? "X Y Z" : "六轴") + " × " + Num(params.stiffness_scale) + "）")
-                  << (kLockRotation ? "；Rx Ry Rz 锁定：名义刚度、姿态不跟随" : "") << "；肘部拉回权重 "
+        std::cout << "ARM_1：名义刚度 K_x_nom [" << rdk::utility::Arr2Str(arm1_K_nom, 1) << "] N/m、Nm/rad；能拖的轴 "
+                  << AxisNames(false) << "："
+                  << (params.passive ? std::string("被动零力控制（kStiffnessScale 不起作用）")
+                                     : "刚度 × " + Num(params.stiffness_scale) + "，浮动时六轴刚度 ["
+                                           + rdk::utility::Arr2Str(arm1_float_K, 1) + "]")
+                  << "；锁定的轴 " << AxisNames(true) << "：名义刚度、目标不跟随；肘部拉回权重 "
                   << Num(params.null_space_tracking) << std::endl;
         // 打印 ARM_2 离位置极限最近的关节，排查 hold 时被推动的原因。
         const auto& q_min = info.q_min.at(rdk::JointGroup::ARM_2);
@@ -592,13 +663,13 @@ int main(int argc, char* argv[])
             // 先让目标位姿跟随实测位姿，再降刚度：降的那一下不会被拉回起点。
             g_arm1_follow = true;
             if (params.passive) {
-                robot->SetForceControlAxis(rdk::JointGroup::ARM_1,  // 目标力 0；Rx Ry Rz 锁定时不做力控，照样位置控制。
-                    {true, true, true, !kLockRotation, !kLockRotation, !kLockRotation});
+                robot->SetForceControlAxis(rdk::JointGroup::ARM_1,  // 能拖的轴做力控、目标力 0；锁定的轴照样位置控制。
+                    {!kLockX, !kLockY, !kLockZ, !kLockRx, !kLockRy, !kLockRz});
             } else {
                 robot->SetCartesianImpedance(rdk::JointGroup::ARM_1, arm1_float_K);
             }
-            std::cout << "ARM_1 已浮动，" << (kLockRotation ? "X Y Z 可以手拖、Rx Ry Rz 锁定" : "六个方向都可以手拖")
-                      << "：目标跟随实测位置，松手停在原地；ARM_2 hold 不动。按 Ctrl+C 结束。" << std::endl;
+            std::cout << "ARM_1 已浮动，能拖的轴 " << AxisNames(false) << "，锁定的轴 " << AxisNames(true)
+                      << "：能拖的轴目标跟随实测值，松手停在原地；ARM_2 hold 不动。按 Ctrl+C 结束。" << std::endl;
             if (log.is_open()) {
                 WriteLogHeader(log);
                 logging = true;
