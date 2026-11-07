@@ -13,13 +13,15 @@
 // ③ 实时调度器每 1 ms 给两条臂各发一次末端指令（StreamCartesianMotionForce），由控制器内置的运动-力统一控制器跟踪：
 //   ARM_1：目标力 0，不自己解 IK。先用名义刚度 K_x_nom、目标位姿锁在进入 ③ 时的末端位姿，成功发满 kWarmupCycles 次，
 //          确认实时指令一直在发；然后能拖的轴（kLockX … kLockRz 为 false）目标每 1 ms 跟随实测值，再把这些轴的刚度
-//          降到 K_x_nom × kStiffnessScale，或者 --passive 给这些轴开被动零力控制。锁定的轴目标不跟随、刚度保持 K_x_nom。
+//          降到 K_x_nom × kStiffnessScale，或者 --passive 给这些轴开被动零力控制，或者 --active 给能拖的 X Y Z 开主动
+//          零力控制。锁定的轴目标不跟随、刚度保持 K_x_nom。
 //          降刚度、开力控都是实时模式里的参数设置，不切换控制模式，两条臂的指令照常发。
 //          跟随实测位姿是和所附方案不同的地方：方案的目标位姿一直锁在起点，刚度 0.10 时 ARM_1 像被弹簧拴住，推不动、
 //          松手弹回（11-03 实测）。跟随之后弹簧力约为 0，只剩阻尼：哪里都能拖，松手停在原地，没人推时是匀速漂、不会越漂越快。
 //   ARM_2：6 轴纯位置控制、名义刚度，目标位姿一直是进入 ③ 时的末端位姿（官方 intermediate5 的 --hold）。
 //          实时模式下没有 Hold 原语可用，ARM_2 的 hold 指令就是每 1 ms 发一次的这个位姿。
-// 7 轴臂的肘部（零空间）不归末端刚度管，由零空间姿态控制拉回进入 ③ 时的关节姿态，所以肘部不像关节版那样完全自由。
+// 7 轴臂的肘部（零空间）不归末端刚度管，由零空间姿态控制拉回进入 ③ 时的关节姿态，所以肘部不像关节版那样完全自由；
+// --nullspace-follow 时参考姿态跟随实测关节位置，基本不再拉回。
 //
 // 编译（项目根目录）：cmake -S script -B .build/script && cmake --build .build/script
 // 运行（实时调度器需要 root）：sudo .build/script/intermediate8_realtime_cartesian_floating <序列号> [选项]；--help 看选项。
@@ -58,14 +60,23 @@ constexpr size_t kDoF = rdk::kSerialJointDoF;  // 每条臂的关节数，7。
 
 // ================================ 透明度参数：在这里调 ================================
 // 都是 RDK 的官方参数，也可以用命令行参数临时覆盖，不用重新编译。
-// kStiffnessScale：ARM_1 能拖的轴（kLockX … kLockRz 为 false）的笛卡尔刚度 = K_x_nom × kStiffnessScale
-//   （SetCartesianImpedance 的 K_x，K_x_nom 启动时打印）；锁定的轴保持 K_x_nom。
+// RDK 的笛卡尔模式没有逐关节（J1–J7）阻尼：SetJointImpedance 的 Z_q 只能在关节阻抗模式下用。这里的阻尼都是末端
+// X Y Z Rx Ry Rz 每个轴各一个，由下面两个参数决定。
+// kStiffnessScale：ARM_1 能拖的轴（kLockX … kLockRz 为 false）的笛卡尔刚度 = K_x_nom × kStiffnessScale，按 X Y Z Rx Ry Rz
+//   每个轴一个比例（SetCartesianImpedance 的 K_x，K_x_nom 启动时打印）；锁定的轴保持 K_x_nom，不看这里的值。
 //   范围 0–1；0 = 零刚度浮动，最透明（文档："Setting motion stiffness of a motion-controlled Cartesian axis to 0 will
-//   make this axis free-floating"）。方案建议 0.10 → 0.05 → 0.02 → 0.00 一档一档降。命令行 --scale=S。
-//   阻尼比 Z_x 用 RDK 默认 0.7：文档警告改它可能不稳定。
-//   浮动时目标位置跟随实测位置，刚度几乎不产生弹簧力，实际起作用的是阻尼：按阻尼比的定义，阻尼 = 2 × 0.7 × √(刚度 × 惯量)，
-//   所以比例越小阻尼越小、越透明；0 时阻尼也是 0，没人推会越漂越快。程序不设速度限位，只能靠 E-stop 和控制器自带的保护停。
-constexpr double kStiffnessScale = 0.0;
+//   make this axis free-floating"）。方案建议 0.10 → 0.05 → 0.02 → 0.00 一档一档降。
+//   命令行 --scale=S（6 个轴都用 S）或 --scale=S1,S2,S3,S4,S5,S6。
+//   浮动时目标位置跟随实测位置，刚度几乎不产生弹簧力，实际起作用的是阻尼：按阻尼比的定义，阻尼 = 2 × Z_x × √(刚度 × 惯量)，
+//   所以比例越小阻尼越小、越透明（阻尼 ∝ √比例）；0 时阻尼也是 0，没人推会越漂越快。
+//   程序不设速度限位，只能靠 E-stop 和控制器自带的保护停。
+constexpr std::array<double, rdk::kCartDoF> kStiffnessScale = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+// kDampingRatio：ARM_1 能拖的轴浮动时的阻尼比（SetCartesianImpedance 的 Z_x），按 X Y Z Rx Ry Rz 排列；锁定的轴和预热时
+//   都用 RDK 默认 0.7，不看这里的值。范围 0.3–0.8，RDK 默认 0.7；文档警告改它可能影响性能和稳定性。
+//   同一个刚度下只能把阻尼调到 0.7 时的 0.43–1.14 倍；刚度为 0 的轴阻尼一直是 0，改它不起作用，大范围调用 kStiffnessScale。
+//   --passive 时能拖的轴是力控，不下发。命令行 --zeta=Z（6 个轴都用 Z）或 --zeta=Z1,Z2,Z3,Z4,Z5,Z6。
+constexpr std::array<double, rdk::kCartDoF> kDampingRatio = {0.3,0.3,0.3,0.3,0.3,0.3};
+constexpr double kNominalDampingRatio = 0.1;  // RDK 的 SetCartesianImpedance 默认 Z_x：锁定的轴和预热时用，不是参数。
 // kNullSpaceRefTracking：SetNullSpaceObjectives 的 ref_positions_tracking，肘部（零空间）拉回进入 ③ 时关节姿态的权重。
 //   范围 0.1–1.0，RDK 默认 0.5；越小肘部越自由。0.1 是最小值，不等于关掉零空间控制。另外两个权重用 RDK 默认 0。
 //   命令行 --nullspace=W。
@@ -77,10 +88,23 @@ constexpr double kNullSpaceRefTracking = 0.1;
 //   所以 Rx Ry Rz 里有能拖的轴时，启动检查到没有力传感器就退出；Rx Ry Rz 都锁定时只有 X Y Z 做力控，不用 6 维力传感器。
 //   命令行 --passive。
 constexpr bool kPassiveForceControl = false;
+// kActiveForceControl：true = 主动零力控制：能拖的 X Y Z 轴做力控、目标力 0，闭环用关节力矩估算的末端力把手上的力压到 0，
+//   控制器主动带着关节走，能抵掉一部分关节摩擦和惯量（J1 J2 最重，主要靠它变轻）；Rx Ry Rz 照样位置控制、刚度
+//   K_x_nom × kStiffnessScale，不用 6 维力传感器。X Y Z 上 kStiffnessScale、kDampingRatio 不起作用。
+//   代价：文档说主动力控会多一点笛卡尔阻尼；末端力估算有偏差时没人推也会自己走，最快到 kActiveMaxLinearVel。
+//   不能和 kPassiveForceControl 同时为 true。命令行 --active。
+constexpr bool kActiveForceControl = false;
+// kActiveMaxLinearVel：SetForceControlAxis 的 max_linear_vel，主动力控时 X Y Z 末端线速度上限 [m/s]。范围 0.005–2.0，
+//   RDK 默认 1.0。这是控制器自己的限速，不停机；被动力控下不起作用。
+constexpr std::array<double, rdk::kCartDoF / 2> kActiveMaxLinearVel = {1.0, 1.0, 1.0};
+// kNullSpaceFollow：true = 肘部参考姿态跟随实测关节位置：浮动后主线程每 kMonitorPeriod 把 SetNullSpacePosture 设成
+//   当前关节位置，零空间几乎不再把肘部拉回进入 ③ 时的姿态，kNullSpaceRefTracking 的拉力约为 0。
+//   肘部自运动（J1 J2 J3 一起转、末端不动的那种）变轻；代价是没人推时肘部可能自己漂。命令行 --nullspace-follow。
+constexpr bool kNullSpaceFollow = false;
 // kLockX … kLockRz：ARM_1 末端每个轴锁不锁，没有命令行参数，改了要重新编译。
 //   true = 锁定：这个轴的目标一直是进入 ③ 时的值（不跟随实测），刚度保持名义刚度 K_x_nom（RDK 允许的最大值），
 //          和 ARM_2 hold 一样硬；--passive 时也不做力控。
-//   false = 能拖：目标跟随实测值，刚度 = K_x_nom × kStiffnessScale；--passive 时做零力控制。
+//   false = 能拖：目标跟随实测值，刚度 = K_x_nom × kStiffnessScale，阻尼比 = kDampingRatio；--passive 时做零力控制。
 //   都是世界坐标系的轴：RDK 的笛卡尔运动控制一直用世界坐标系，和 SetCartesianImpedance 的 K_x 同一个顺序。
 //   转动轴锁定的意思是：从进入 ③ 时的姿态转到当前姿态的旋转向量（世界坐标系）在这个轴上的分量拉回 0，见 FollowPose。
 //   默认和原来的 kLockRotation = true 一样：X Y Z 能拖，Rx Ry Rz 锁定。
@@ -95,6 +119,7 @@ constexpr bool kLockRz = false;
 
 // 程序内部用，由上面 6 个参数得出，不用改：按 X Y Z Rx Ry Rz 排列。
 constexpr std::array<bool, rdk::kCartDoF> kLockAxis = {kLockX, kLockY, kLockZ, kLockRx, kLockRy, kLockRz};
+const std::array<std::string, rdk::kCartDoF> kAxisNames = {"X", "Y", "Z", "Rx", "Ry", "Rz"};
 constexpr bool kAnyRotationFree = !kLockRx || !kLockRy || !kLockRz;  // Rx Ry Rz 里至少一个能拖。
 constexpr bool kAllRotationFree = !kLockRx && !kLockRy && !kLockRz;  // Rx Ry Rz 三个都能拖。
 
@@ -130,9 +155,12 @@ constexpr auto kMonitorPeriod = std::chrono::milliseconds(10);
 struct Params  // 命令行覆盖之后实际使用的参数。
 {
     std::string robot_sn;
-    double stiffness_scale = kStiffnessScale;
+    std::array<double, rdk::kCartDoF> stiffness_scale = kStiffnessScale;
+    std::array<double, rdk::kCartDoF> damping_ratio = kDampingRatio;
     double null_space_tracking = kNullSpaceRefTracking;
     bool passive = kPassiveForceControl;
+    bool active = kActiveForceControl;
+    bool null_space_follow = kNullSpaceFollow;
     std::string log_path;  // 空 = 不记录。
     bool home = true;
     bool clear_fault = false;
@@ -164,10 +192,18 @@ void PrintHelp()
     std::cout << "用法：sudo .build/script/intermediate8_realtime_cartesian_floating <序列号> [选项]\n"
                  "  <序列号>          完整序列号，不要有空格，例如 Enlight-LL-123456\n"
                  "  --scale=S         覆盖 kStiffnessScale：ARM_1 能拖的轴（kLockX … kLockRz 为 false）的刚度占名义刚度的\n"
-                 "                    比例 [0, 1]；目标跟随实测值，实际决定阻尼，越小越透明；0 = 无阻尼浮动\n"
+                 "                    比例 [0, 1]；目标跟随实测值，实际决定阻尼，越小越透明；0 = 无阻尼浮动。\n"
+                 "                    1 个数 = 6 个轴都用它；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个，例如 --scale=0.05,0.05,0.02,0,0,0\n"
+                 "  --zeta=Z          覆盖 kDampingRatio：ARM_1 能拖的轴的阻尼比 [0.3, 0.8]，RDK 默认 0.7；刚度为 0 的轴不起作用。\n"
+                 "                    1 个数或逗号分开的 6 个数，同 --scale；--passive 时不起作用\n"
                  "  --nullspace=W     覆盖 kNullSpaceRefTracking：肘部拉回参考姿态的权重 [0.1, 1]\n"
                  "  --passive         覆盖 kPassiveForceControl：能拖的轴做被动零力控制（Rx Ry Rz 里有能拖的轴时\n"
                  "                    要 6 维力传感器）\n"
+                 "  --active          覆盖 kActiveForceControl：能拖的 X Y Z 轴做主动零力控制，闭环抵掉一部分关节摩擦和惯量；\n"
+                 "                    没人推时可能自己走，最快到 kActiveMaxLinearVel；不能和 --passive 同时用\n"
+                 "  --nullspace-follow\n"
+                 "                    覆盖 kNullSpaceFollow：肘部参考姿态每 10 ms 跟随实测关节位置，肘部不再被拉回；\n"
+                 "                    没人推时肘部可能自己漂\n"
                  "  --log=FILE.csv    ③ 浮动期间按 100 Hz 记录 ARM_1 的末端位姿、速度、外力和关节位置、速度\n"
                  "  --no-home         不先回正，在当前姿态受力回 0 后直接浮动\n"
                  "  --clear-fault     启动时若有故障先尝试清除；不加则直接退出\n"
@@ -183,11 +219,10 @@ std::string Num(double value)  // 数字转成最短的文字，例如 10、0.05
 
 std::string AxisNames(bool locked)  // kLockAxis 里等于 locked 的轴，例如 "X Y Z"；一个都没有时是 "无"。
 {
-    static const std::array<std::string, rdk::kCartDoF> kNames = {"X", "Y", "Z", "Rx", "Ry", "Rz"};
     std::string text;
     for (size_t i = 0; i < rdk::kCartDoF; ++i) {
         if (kLockAxis[i] == locked) {
-            text += (text.empty() ? "" : " ") + kNames[i];
+            text += (text.empty() ? "" : " ") + kAxisNames[i];
         }
     }
     return text.empty() ? "无" : text;
@@ -198,6 +233,28 @@ bool ParseNumber(const char* text, double& value)  // 整个字符串是一个�
     char* end = nullptr;
     value = std::strtod(text, &end);
     return end != text && *end == '\0' && std::isfinite(value);
+}
+
+// text 是 1 个数（6 个轴都用它）或逗号分开的 6 个数（X Y Z Rx Ry Rz 各一个）才算成功。
+bool ParseAxisValues(const std::string& text, std::array<double, rdk::kCartDoF>& values)
+{
+    std::vector<double> parsed;
+    std::istringstream iss(text);
+    std::string item;
+    while (std::getline(iss, item, ',')) {
+        double value = 0.0;
+        if (!ParseNumber(item.c_str(), value)) {
+            return false;
+        }
+        parsed.push_back(value);
+    }
+    if (text.ends_with(",") || (parsed.size() != 1 && parsed.size() != values.size())) {
+        return false;
+    }
+    for (size_t i = 0; i < values.size(); ++i) {
+        values[i] = parsed.size() == 1 ? parsed[0] : parsed[i];
+    }
+    return true;
 }
 
 bool OptionValue(const std::string& arg, const std::string& name, std::string& value)  // arg 是 "name=值" 时取出值。
@@ -219,8 +276,12 @@ std::string ParseArgs(int argc, char* argv[], Params& params)  // 读取命令�
         const std::string arg = argv[i];
         std::string value;
         if (OptionValue(arg, "--scale", value)) {
-            if (!ParseNumber(value.c_str(), params.stiffness_scale)) {
-                return "--scale= 后面要跟 1 个数";
+            if (!ParseAxisValues(value, params.stiffness_scale)) {
+                return "--scale= 后面要跟 1 个数或逗号分开的 6 个数";
+            }
+        } else if (OptionValue(arg, "--zeta", value)) {
+            if (!ParseAxisValues(value, params.damping_ratio)) {
+                return "--zeta= 后面要跟 1 个数或逗号分开的 6 个数";
             }
         } else if (OptionValue(arg, "--nullspace", value)) {
             if (!ParseNumber(value.c_str(), params.null_space_tracking)) {
@@ -233,6 +294,10 @@ std::string ParseArgs(int argc, char* argv[], Params& params)  // 读取命令�
             params.log_path = value;
         } else if (arg == "--passive") {
             params.passive = true;
+        } else if (arg == "--active") {
+            params.active = true;
+        } else if (arg == "--nullspace-follow") {
+            params.null_space_follow = true;
         } else if (arg == "--no-home") {
             params.home = false;
         } else if (arg == "--clear-fault") {
@@ -242,11 +307,27 @@ std::string ParseArgs(int argc, char* argv[], Params& params)  // 读取命令�
         }
     }
     // 下发前按 RDK 文档范围检查；上方常量也一样要过这一关。刚度上限 K_x_nom 由比例 ≤ 1 保证。
-    if (!(params.stiffness_scale >= 0.0 && params.stiffness_scale <= 1.0)) {
-        return "stiffness_scale = " + Num(params.stiffness_scale) + " 超出范围 [0, 1]";
+    for (size_t i = 0; i < rdk::kCartDoF; ++i) {
+        if (!(params.stiffness_scale[i] >= 0.0 && params.stiffness_scale[i] <= 1.0)) {
+            return "stiffness_scale 的 " + kAxisNames[i] + " = " + Num(params.stiffness_scale[i]) + " 超出范围 [0, 1]";
+        }
+        if (!(params.damping_ratio[i] >= 0.3 && params.damping_ratio[i] <= 0.8)) {
+            return "damping_ratio 的 " + kAxisNames[i] + " = " + Num(params.damping_ratio[i]) + " 超出范围 [0.3, 0.8]";
+        }
     }
     if (!(params.null_space_tracking >= 0.1 && params.null_space_tracking <= 1.0)) {
         return "null_space_tracking = " + Num(params.null_space_tracking) + " 超出范围 [0.1, 1]";
+    }
+    for (double v : kActiveMaxLinearVel) {
+        if (!(v >= 0.005 && v <= 2.0)) {
+            return "kActiveMaxLinearVel 里的 " + Num(v) + " 超出范围 [0.005, 2]";
+        }
+    }
+    if (params.active && params.passive) {
+        return "--active 和 --passive 只能选一个（kActiveForceControl、kPassiveForceControl 不能都是 true）";
+    }
+    if (params.active && kLockX && kLockY && kLockZ) {
+        return "X Y Z 都锁定，--active 没有能做力控的轴";
     }
     return "";
 }
@@ -559,8 +640,10 @@ int main(int argc, char* argv[])
     RtTargets targets;
     Arm2Record arm2_record;
     std::unique_ptr<rdk::Scheduler> scheduler;
-    bool need_stop = false, started = false, logging = false;
+    bool need_stop = false, started = false, logging = false, floating = false;
     uint64_t rt_mode_checks = 0;  // 拖动期间主线程查到控制模式是 RT_CARTESIAN_MOTION_FORCE 的次数，结束时打印。
+    uint64_t null_space_updates = 0;  // --nullspace-follow：SetNullSpacePosture 调用次数，结束时打印。
+    double null_space_max_ms = 0.0;  // --nullspace-follow：SetNullSpacePosture 单次最长用时 [ms]，结束时打印。
     double drag_seconds = 0.0;  // 拖动（ARM_1 已浮动之后）持续的秒数。
     try {
         scheduler = std::make_unique<rdk::Scheduler>();  // 先建调度器：系统问题在连机器人之前就暴露。
@@ -571,11 +654,21 @@ int main(int argc, char* argv[])
         Prepare(*robot, params);
         const auto info = robot->info();
         const auto& arm1_K_nom = info.K_x_nom.at(rdk::JointGroup::ARM_1);
-        // ARM_1 浮动时的刚度：能拖的轴 = K_x_nom × stiffness_scale，锁定的轴保持 K_x_nom。
+        const auto& arm1_q_min = info.q_min.at(rdk::JointGroup::ARM_1);  // --nullspace-follow 夹参考姿态用。
+        const auto& arm1_q_max = info.q_max.at(rdk::JointGroup::ARM_1);
+        // ARM_1 浮动时的刚度和阻尼比：能拖的轴 = K_x_nom × stiffness_scale、damping_ratio，锁定的轴保持 K_x_nom、0.7。
         auto arm1_float_K = arm1_K_nom;
+        std::array<double, rdk::kCartDoF> arm1_float_Z;
+        arm1_float_Z.fill(kNominalDampingRatio);
+        std::string zeta_unused;  // 刚度为 0、阻尼比又不是 0.7 的能拖的轴：阻尼一直是 0，改阻尼比不起作用，启动时提示。
         for (size_t i = 0; i < arm1_float_K.size(); ++i) {
             if (!kLockAxis[i]) {
-                arm1_float_K[i] *= params.stiffness_scale;
+                arm1_float_K[i] *= params.stiffness_scale[i];
+                arm1_float_Z[i] = params.damping_ratio[i];
+                const bool active_axis = params.active && i < 3;  // --active 时 X Y Z 力控，刚度、阻尼比本来就不起作用。
+                if (!active_axis && arm1_float_K[i] == 0.0 && arm1_float_Z[i] != kNominalDampingRatio) {
+                    zeta_unused += (zeta_unused.empty() ? "" : " ") + kAxisNames[i];
+                }
             }
         }
 
@@ -617,7 +710,7 @@ int main(int argc, char* argv[])
             robot->SetForceControlAxis(group, {false, false, false, false, false, false});
             robot->SetCartesianImpedance(group, info.K_x_nom.at(group));
         }
-        robot->SetForceControlFrame(rdk::JointGroup::ARM_1, rdk::CoordType::WORLD);  // RDK 默认；只在 --passive 开力控时用到。
+        robot->SetForceControlFrame(rdk::JointGroup::ARM_1, rdk::CoordType::WORLD);  // RDK 默认；只在 --passive、--active 开力控时用到。
         robot->SetNullSpaceObjectives(rdk::JointGroup::ARM_1, 0.0, 0.0, params.null_space_tracking);
         robot->SetNullSpaceObjectives(rdk::JointGroup::ARM_2, 0.0, 0.0, kArm2NullSpaceRefTracking);
         const auto states = robot->states();
@@ -631,13 +724,29 @@ int main(int argc, char* argv[])
             {rdk::JointGroup::ARM_1, rdk::RtCartesianCmd(arm1.tcp_pose, {0.0, 0.0, 0.0, 0.0, 0.0, 0.0})},
             {rdk::JointGroup::ARM_2, rdk::RtCartesianCmd(arm2.tcp_pose)},  // 只给位姿，就是纯位置控制。
         };
+        std::string float_mode;  // 能拖的轴浮动时怎么控制，启动时打印。
+        if (params.passive) {
+            float_mode = "被动零力控制（kStiffnessScale、kDampingRatio 不起作用）";
+        } else {
+            float_mode = "刚度比例 [" + rdk::utility::Arr2Str(params.stiffness_scale, 3) + "]，浮动时六轴刚度 ["
+                         + rdk::utility::Arr2Str(arm1_float_K, 1) + "]、阻尼比 [" + rdk::utility::Arr2Str(arm1_float_Z, 2)
+                         + "]";
+            if (params.active) {
+                float_mode += "；其中能拖的 X Y Z 做主动零力控制（这几个轴的刚度、阻尼比不起作用），线速度上限 ["
+                              + rdk::utility::Arr2Str(kActiveMaxLinearVel, 3) + "] m/s";
+            }
+        }
         std::cout << "ARM_1：名义刚度 K_x_nom [" << rdk::utility::Arr2Str(arm1_K_nom, 1) << "] N/m、Nm/rad；能拖的轴 "
-                  << AxisNames(false) << "："
-                  << (params.passive ? std::string("被动零力控制（kStiffnessScale 不起作用）")
-                                     : "刚度 × " + Num(params.stiffness_scale) + "，浮动时六轴刚度 ["
-                                           + rdk::utility::Arr2Str(arm1_float_K, 1) + "]")
-                  << "；锁定的轴 " << AxisNames(true) << "：名义刚度、目标不跟随；肘部拉回权重 "
-                  << Num(params.null_space_tracking) << std::endl;
+                  << AxisNames(false) << "：" << float_mode << "；锁定的轴 " << AxisNames(true)
+                  << "：名义刚度、阻尼比 0.7、目标不跟随；肘部拉回权重 " << Num(params.null_space_tracking)
+                  << (params.null_space_follow ? "，参考姿态每 " + std::to_string(kMonitorPeriod.count())
+                                                     + " ms 跟随实测关节位置"
+                                               : std::string("，参考姿态 = 进入 ③ 时的姿态"))
+                  << std::endl;
+        if (!params.passive && !zeta_unused.empty()) {
+            std::cout << "注意：" << zeta_unused << " 刚度为 0，阻尼也是 0，--zeta 对这些轴不起作用；要有阻尼先调大 --scale"
+                      << std::endl;
+        }
         // 打印 ARM_2 离位置极限最近的关节，排查 hold 时被推动的原因。
         const auto& q_min = info.q_min.at(rdk::JointGroup::ARM_2);
         const auto& q_max = info.q_max.at(rdk::JointGroup::ARM_2);
@@ -666,8 +775,13 @@ int main(int argc, char* argv[])
                 robot->SetForceControlAxis(rdk::JointGroup::ARM_1,  // 能拖的轴做力控、目标力 0；锁定的轴照样位置控制。
                     {!kLockX, !kLockY, !kLockZ, !kLockRx, !kLockRy, !kLockRz});
             } else {
-                robot->SetCartesianImpedance(rdk::JointGroup::ARM_1, arm1_float_K);
+                if (params.active) {  // 能拖的 X Y Z 做主动力控、目标力 0；Rx Ry Rz 和锁定的轴照样位置控制。
+                    robot->SetForceControlAxis(rdk::JointGroup::ARM_1, {!kLockX, !kLockY, !kLockZ, false, false, false},
+                        kActiveMaxLinearVel);
+                }
+                robot->SetCartesianImpedance(rdk::JointGroup::ARM_1, arm1_float_K, arm1_float_Z);
             }
+            floating = true;
             std::cout << "ARM_1 已浮动，能拖的轴 " << AxisNames(false) << "，锁定的轴 " << AxisNames(true)
                       << "：能拖的轴目标跟随实测值，松手停在原地；ARM_2 hold 不动。按 Ctrl+C 结束。" << std::endl;
             if (log.is_open()) {
@@ -687,8 +801,25 @@ int main(int argc, char* argv[])
             }
             ++rt_mode_checks;  // 走到这里说明这次查到的控制模式仍是 RT_CARTESIAN_MOTION_FORCE。
             drag_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - float_start).count();
-            if (logging) {  // 文件读写在主线程，不在实时任务里。
-                WriteLogRow(log, drag_seconds, robot->states().at(rdk::JointGroup::ARM_1));
+            const bool follow_null_space = floating && params.null_space_follow;
+            if (logging || follow_null_space) {
+                const auto arm1_now = robot->states().at(rdk::JointGroup::ARM_1);
+                if (logging) {  // 文件读写在主线程，不在实时任务里。
+                    WriteLogRow(log, drag_seconds, arm1_now);
+                }
+                if (follow_null_space) {
+                    // 肘部参考姿态 = 当前关节位置，夹在关节范围内（超出范围 SetNullSpacePosture 会报错）。
+                    // 阻塞到送达，所以放在主线程，不在实时任务里；记下最长用时。
+                    auto q_ref = arm1_now.q;
+                    for (size_t i = 0; i < kDoF; ++i) {
+                        q_ref[i] = std::clamp(q_ref[i], arm1_q_min[i], arm1_q_max[i]);
+                    }
+                    const auto call_start = std::chrono::steady_clock::now();
+                    robot->SetNullSpacePosture(rdk::JointGroup::ARM_1, q_ref);
+                    null_space_max_ms = std::max(null_space_max_ms,
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - call_start).count());
+                    ++null_space_updates;
+                }
             }
             std::this_thread::sleep_for(kMonitorPeriod);
         }
@@ -725,6 +856,10 @@ int main(int argc, char* argv[])
         std::cout << "拖动 " << Num(drag_seconds) << " 秒期间主线程每 " << kMonitorPeriod.count() << " ms 查一次控制模式，"
                   << rt_mode_checks << " 次都是 RT_CARTESIAN_MOTION_FORCE；③ 实时任务共发出 " << g_sent_count.load()
                   << " 次 StreamCartesianMotionForce（实时接口，1 kHz）" << std::endl;
+    }
+    if (null_space_updates > 0) {
+        std::cout << "肘部参考姿态跟随：SetNullSpacePosture 调用 " << null_space_updates << " 次，单次最长 "
+                  << Num(null_space_max_ms) << " ms" << std::endl;
     }
     if (logging) {
         log.close();

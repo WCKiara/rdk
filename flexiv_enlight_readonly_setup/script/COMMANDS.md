@@ -104,14 +104,42 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 
 | 选项 | 作用 |
 |---|---|
-| `--scale=S` | ARM_1 能拖的轴的刚度占名义刚度的比例，范围 0–1，默认 0.10（锁定的轴不受影响）。目标跟随实测位置，所以它决定的是阻尼，越小越透明。0 是无阻尼浮动，没人推会越漂越快 |
+| `--scale=S` | ARM_1 能拖的轴的刚度占名义刚度的比例，范围 0–1，默认 0（锁定的轴不受影响）。目标跟随实测位置，所以它决定的是阻尼（阻尼 ∝ √比例），越小越透明。0 是无阻尼浮动，没人推会越漂越快。1 个数 = 6 个轴都用它；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个，例如 `--scale=0.05,0.05,0.02,0,0,0` |
+| `--zeta=Z` | ARM_1 能拖的轴的阻尼比，范围 0.3–0.8，默认 0.7（RDK 默认；锁定的轴固定 0.7）。只能把阻尼调到 0.7 时的 0.43–1.14 倍，刚度为 0 的轴不起作用。1 个数或 6 个数，同 `--scale`。`--passive` 时不起作用 |
 | `--nullspace=W` | 肘部被拉回起始姿态的权重，范围 0.1–1，默认 0.5 |
+| `--active` | 能拖的 X Y Z 轴做主动零力控制：闭环用关节力矩估算的末端力，控制器主动带着关节走，能抵掉一部分关节摩擦和惯量（J1 J2 变轻主要靠它）。Rx Ry Rz 照样位置控制，不需要六维力传感器。末端力估算有偏差时没人推也会自己走，最快到 `kActiveMaxLinearVel`（默认 1.0 m/s）。不能和 `--passive` 同时用 |
+| `--nullspace-follow` | 肘部参考姿态每 10 ms 跟随实测关节位置，肘部不再被拉回进入 ③ 时的姿态（J1 J2 J3 一起转、末端不动的那种动作变轻）。没人推时肘部可能自己漂 |
 | `--log=FILE.csv` | 浮动期间 100 Hz 记录 ARM_1 的末端位姿、速度、外力和关节状态 |
 | `--passive` | 能拖的轴做被动零力控制，锁定的轴照样锁定。Rx Ry Rz 都锁定时不需要六维力传感器；Rx Ry Rz 里有能拖的轴时需要，这台没有，程序会在上伺服之前直接退出 |
 | `--no-home` | 跳过回正 |
 | `--clear-fault` | 启动时有故障先尝试清除 |
 
-要长期改默认值，改源码里"透明度参数：在这里调"一段的 `kStiffnessScale`、`kNullSpaceRefTracking`、`kPassiveForceControl`、`kLockX` … `kLockRz`。停下来之后怎么看原因，同上面的"停下来之后"。详细说明见 [README_cartesian_floating.md](README_cartesian_floating.md)。
+要长期改默认值，改源码里"透明度参数：在这里调"一段的 `kStiffnessScale`、`kDampingRatio`、`kNullSpaceRefTracking`、`kPassiveForceControl`、`kActiveForceControl`、`kActiveMaxLinearVel`、`kNullSpaceFollow`、`kLockX` … `kLockRz`。停下来之后怎么看原因，同上面的"停下来之后"。详细说明见 [README_cartesian_floating.md](README_cartesian_floating.md)。
+
+### 量化对比透明度
+
+每次运行加 `--log=` 记一份日志，文件名写上这次的参数。**每次的拖法要一样**，数字才能比：
+
+1. 看到"ARM_1 已浮动"后，先手离开 2 秒（手悬在旁边随时能扶住）。脚本用日志开头这 2 秒算松手漂移。
+2. 沿一个方向慢慢来回推 10 秒左右，有慢有快。
+3. 如果转动轴放开了，再慢慢转几下工具。
+4. Ctrl+C 结束。
+
+```bash
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.10 --log=logs/i8_s010.csv
+```
+
+```bash
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.00 --log=logs/i8_s000.csv
+```
+
+跑完之后，把几份日志放在一起比（不需要 sudo，不连机器人）：
+
+```bash
+.venv/bin/python script/compare_transparency.py logs/i8_s010.csv logs/i8_s000.csv
+```
+
+最后的对比表里，平移阻尼、转动阻尼、平移阻力、起动力越小越透明；松手最大漂移越小越稳。松手漂移只看日志开头 2 秒，要换成别的秒数就加 `--hands-off=3`。
 
 ## 清除故障
 
