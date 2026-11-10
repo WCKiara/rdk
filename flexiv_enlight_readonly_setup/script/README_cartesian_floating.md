@@ -14,7 +14,7 @@
   - 默认 X Y Z 能拖、Rx Ry Rz 锁定，和原来的 `kLockRotation = true` 完全一样。
   - 轴都是世界坐标系的，RDK 的笛卡尔运动控制一直用世界坐标系。
   - 只锁一部分转动轴时，程序把"从起始姿态转到当前姿态"的旋转向量在锁定轴上的分量拉回 0，能拖的轴上不加弹簧力（`FollowPose`）。
-- `--passive`：能拖的轴做被动零力控制，目标力 0；锁定的轴照样位置控制。Rx Ry Rz 里有能拖的轴时需要六维力传感器，本机没有。
+- `--passive`：能拖的 X Y Z 做被动零力控制，目标力 0。Rx Ry Rz 不做力控（力矩控制要六维力传感器，本机没有，10-30 实测被拒绝），能拖的 Rx Ry Rz 照样按刚度、阻尼比浮动。锁定的轴照样位置控制。2026-11-09 改成这样，之前 Rx Ry Rz 有能拖的轴时 `--passive` 会直接退出。
 - 先用名义刚度成功发满 100 次实时指令，再降刚度。
 - **和方案不同：** 不设方案里的速度、位置限位类停机检查（2026-11-03 按要求去掉），见下方"停机条件"。
 
@@ -30,9 +30,8 @@
 
 每次给 ARM_1 发指令都同时给 ARM_2 发 hold，不单独控制一条臂。
 
-另外两处：
+另外一处：
 
-- `--passive` 在上伺服之前检查 ARM_1 的 `raw_ft_sensor`（RDK：没装力传感器时为 0）。这台机器 Rx/Ry/Rz 力矩控制会被拒绝，检查到 0 就直接退出，机器人不动。只在 Rx Ry Rz 里有能拖的轴（`kLockRx`、`kLockRy`、`kLockRz` 有 `false`）时检查：三个都锁定时 Rx Ry Rz 不做力控，用不到六维力传感器。
 - `--log=FILE.csv`：浮动期间由主线程按 100 Hz 记录，实时任务里不读写文件。
 
 ## 编译
@@ -57,12 +56,12 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 | 选项 | 作用 |
 |---|---|
 | `--scale=S` | ARM_1 能拖的轴的刚度 = `K_x_nom × S`，范围 [0, 1]，默认 0。锁定的轴不受影响。1 个数 = 6 个轴都用它；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个 |
-| `--zeta=Z` | ARM_1 能拖的轴的阻尼比 Z_x，范围 [0.3, 0.8]，默认 0.7（锁定的轴固定 0.7）。刚度为 0 的轴不起作用；1 个数或 6 个数，同 `--scale`。`--passive` 时不起作用 |
+| `--zeta=Z` | ARM_1 能拖的轴的阻尼比 Z_x，范围 [0.3, 0.8]，默认 0.7（锁定的轴固定 0.7）。刚度为 0 的轴不起作用；1 个数或 6 个数，同 `--scale`。`--passive`、`--active` 时对 X Y Z 不起作用 |
 | `--nullspace=W` | 肘部（零空间）拉回进入 ③ 时姿态的权重，范围 [0.1, 1]，默认 0.5。0.1 是 RDK 允许的最小值，不等于关闭零空间控制 |
-| `--passive` | 能拖的轴做被动零力控制，此时 `--scale` 不起作用；锁定的轴照样锁定。Rx Ry Rz 里有能拖的轴时需要六维力传感器，本机没有 |
-| `--active` | 能拖的 X Y Z 轴做主动零力控制：闭环用关节力矩估算的末端力，控制器主动带着关节走，能抵掉一部分关节摩擦和惯量（J1 J2 变轻主要靠它）。Rx Ry Rz 照样位置控制，不需要六维力传感器。末端力估算有偏差时没人推也会自己走，最快到 `kActiveMaxLinearVel`（默认 1.0 m/s）。不能和 `--passive` 同时用 |
+| `--passive` | 能拖的 X Y Z 做被动零力控制，这几个轴上 `--scale`、`--zeta` 不起作用；Rx Ry Rz 不做力控，能拖的 Rx Ry Rz 照样按 `--scale`、`--zeta` 浮动（`--scale=0` 时零刚度自由转），不需要六维力传感器。锁定的轴照样锁定。不能和 `--active` 同时用 |
+| `--active` | 能拖的 X Y Z 轴做主动零力控制。**2026-11-06 实测比不开重得多**：平移阻尼 141–202 N·s/m，不开时 7–10 N·s/m，是主动力控多出来的阻尼，不要用来变轻。Rx Ry Rz 照样位置控制，不需要六维力传感器。末端力估算有偏差时没人推也会自己走，最快到 `kActiveMaxLinearVel`（默认 1.0 m/s）。不能和 `--passive` 同时用 |
 | `--nullspace-follow` | 肘部参考姿态每 10 ms 跟随实测关节位置，肘部不再被拉回进入 ③ 时的姿态（J1 J2 J3 一起转、末端不动的那种动作变轻）。没人推时肘部可能自己漂 |
-| `--log=FILE.csv` | 浮动期间 100 Hz 记录 ARM_1 的 `tcp_pose`、`tcp_twist`、`tcp_wrench`、`q`、`dtheta`。文件属主是 root |
+| `--log=FILE.csv` | 浮动期间 100 Hz 记录 ARM_1 的 `tcp_pose`、`tcp_twist`、`tcp_wrench`、`q`、`dtheta`。文件属主是 root。文件已经存在时程序不运行，不会覆盖旧记录 |
 | `--no-home` | 跳过 ① 回正，在当前姿态受力回 0 后直接浮动 |
 | `--clear-fault` | 启动时有故障先尝试清除；不加则直接退出 |
 | `-h`, `--help` | 打印用法，不连接机器人 |
@@ -70,7 +69,7 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 例如零刚度、最弱零空间跟踪，并记录数据：
 
 ```bash
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.00 --nullspace=0.1 --log=logs/i8_scale0_ns010.csv
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.00 --nullspace=0.1 --log=logs/i8_scale0_ns010_$(date +%Y%m%d_%H%M%S).csv
 ```
 
 在本机比较被动力控的手感，用 `arm1_transparent_arm2_hold_rt_cartesian --passive`：X Y Z 被动零力，Rx Ry Rz 零转动刚度，见 [COMMANDS.md](COMMANDS.md)。

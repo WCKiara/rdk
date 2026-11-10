@@ -1,0 +1,23 @@
+[2026-11-09 17:02:45.142] [info] | | | | | | | | | |  Flexiv RDK v2.1  | | | | | | | | | |
+[2026-11-09 17:02:45.152] [info] [flexiv::rdk::Robot] Searching for [Enlight-LL-062034] ...
+[2026-11-09 17:02:45.200] [info] [flexiv::rdk::Robot] Connected to the robot
+[2026-11-09 17:02:45.352] [info] [flexiv::rdk::Robot] Validated license: RDK-Professional
+[2026-11-09 17:02:45.353] [info] [flexiv::rdk::Robot] Initialization complete
+[2026-11-09 17:02:45.373] [info] [flexiv::rdk::Robot] Control mode switched to [NRT_PRIMITIVE_EXECUTION]
+① ARM_1 回正中（Home，关节速度 20%），ARM_2 Hold。Ctrl+C 可随时停 ……
+ARM_1 已回正。
+② ARM_1 受力回 0 中（ZeroFTSensor），ARM_2 Hold。不要碰 ARM_1 ……
+ARM_1 受力回 0 前：外力矩 tau_ext [0.00 0.01 -0.03 0.00 -0.00 0.04 0.00] Nm，末端外力 tcp_wrench [-0.13 0.02 -0.09 -0.02 -0.07 -0.01] N/Nm
+ARM_1 受力回 0 后：外力矩 tau_ext [-0.01 -0.01 -0.01 0.00 0.00 0.00 -0.00] Nm，末端外力 tcp_wrench [0.02 -0.01 -0.01 0.00 0.00 0.00] N/Nm
+[2026-11-09 17:02:54.117] [info] [flexiv::rdk::Robot] Control mode switched to [RT_CARTESIAN_MOTION_FORCE]
+ARM_1：名义刚度 K_x_nom [15000.0 15000.0 15000.0 2000.0 2000.0 2000.0] N/m、Nm/rad；能拖的轴 X Y Z Rx Ry Rz：刚度比例 [0.000 0.000 0.000 0.000 0.000 0.000]，浮动时六轴刚度 [0.0 0.0 0.0 0.0 0.0 0.0]、阻尼比 [0.30 0.30 0.30 0.30 0.30 0.30]；其中能拖的 X Y Z 做被动零力控制（这几个轴的刚度、阻尼比不起作用），Rx Ry Rz 不做力控；锁定的轴 无：名义刚度、阻尼比 0.7、目标不跟随；肘部拉回权重 0.1，参考姿态 = 进入 ③ 时的姿态
+注意：Rx Ry Rz 刚度为 0，阻尼也是 0，--zeta 对这些轴不起作用；要有阻尼先调大 --scale
+ARM_2 hold 关节位置：[1.035 -0.094 0.148 1.481 -0.023 -1.410 6.114] rad；离关节极限最近的是 J7，还差 0.0818419 rad（范围 [-6.19592, 6.19592] rad）
+③ 实时模式 RT_CARTESIAN_MOTION_FORCE 已开始：ARM_2 hold 不动；ARM_1 先用名义刚度保持，扶住 ARM_1 ……
+ARM_1 已浮动，能拖的轴 X Y Z Rx Ry Rz，锁定的轴 无：能拖的轴目标跟随实测值，松手停在原地；ARM_2 hold 不动。按 Ctrl+C 结束。
+[2026-11-09 17:03:13.215] [info] [flexiv::rdk::Robot] Control mode switched to [IDLE]
+已 Stop()：机器人进入 IDLE 并保持当前位置。
+③ 期间 ARM_2 最大偏离 hold 位置：[0.0012 0.0002 0.0008 0.0007 0.0003 0.0005 0.0005] rad；最大速度：[0.010 0.002 0.015 0.004 0.004 0.006 0.012] rad/s
+拖动 16.9308 秒期间主线程每 10 ms 查一次控制模式，1676 次都是 RT_CARTESIAN_MOTION_FORCE；③ 实时任务共发出 17040 次 StreamCartesianMotionForce（实时接口，1 kHz）
+日志已写入 logs/i8_passive_20261109_165932.csv
+[2026-11-09 17:03:13.252] [info] >>>>> Flexiv RDK exited <<<<<
