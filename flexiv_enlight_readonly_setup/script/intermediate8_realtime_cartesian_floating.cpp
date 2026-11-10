@@ -88,7 +88,7 @@ constexpr double kNullSpaceRefTracking = 0.1;
 //   Rx Ry Rz 不做力控：力矩控制要 6 维力传感器，10-30 实测这台报错 "moment control is only available with 6DoF F/T sensor"。
 //   能拖的 Rx Ry Rz 和不开 --passive 时一样，按 kStiffnessScale、kDampingRatio 浮动（0 = 零刚度自由转）。
 //   不能和 kActiveForceControl 同时为 true。命令行 --passive。
-constexpr bool kPassiveForceControl = false;
+constexpr bool kPassiveForceControl = true;
 // kActiveForceControl：true = 主动零力控制：能拖的 X Y Z 轴做力控、目标力 0，闭环用关节力矩估算的末端力把手上的力压到 0，
 //   原以为能抵掉一部分关节摩擦和惯量，11-06 实测反而重得多：平移阻尼 141–202 N·s/m，不开时 7–10 N·s/m
 //   （compare_transparency.py，logs/i8_active*.csv 对 i8_ns010、i8_nsfollow），就是文档说的主动力控多出来的阻尼。
