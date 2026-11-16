@@ -20,3 +20,7 @@ foreach(program
   target_link_libraries(${program} flexiv::flexiv_rdk)
   set_target_properties(${program} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 endforeach()
+
+# ARM_1 软停止的离线单元测试：不连机器人，不链接 RDK。没装 RDK 的电脑用 arm1_soft_stop_test.cpp 开头的 g++ 命令。
+add_executable(arm1_soft_stop_test arm1_soft_stop_test.cpp)
+set_target_properties(arm1_soft_stop_test PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)

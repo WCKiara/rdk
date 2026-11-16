@@ -62,12 +62,50 @@ sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034
 | `--null-space-tracking W` | 肘部被拉回原姿态的权重，范围 0.1–1，越小肘部越自由 |
 | `--no-home` | 跳过回正 |
 | `--clear-fault` | 启动时有故障先尝试清除 |
+| `--stop-di N` | 数字输入 DI N（0–19）变高也算 Stop Sign，见下方"ARM_1 软停止" |
+| `--stop-stiffness-scale S` | 软停止后 ARM_1 的刚度占 K_x_nom 的比例，范围 (0, 1]，默认 1 |
+| `--stiffness-ramp` | 软停止时刚度按 (t/T)² 渐增。第二阶段实验，默认关 |
+| `--log FILE.csv` | ③ 期间每个实时周期记一行（约 1 MB/s）。文件已经存在时程序不运行 |
 
 选项可以组合使用，例如：
 
 ```bash
 sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --passive --rot-stiffness 5 5 5
 ```
+
+### ARM_1 软停止（Stop Sign，只有笛卡尔空间版有）
+
+③ 开始后，用下面任一种方式发普通 Stop Sign：
+
+- 在运行程序的终端里按 Enter；
+- 另开一个终端运行 `sudo kill -USR1 <pid>`，pid 在"发 Stop Sign"那一行里。视觉等别的程序也用这种方式；
+- 加了 `--stop-di N` 时，让 DI N 变高。
+
+收到之后，ARM_1 从当时的速度按二次位置曲线减速到 0，然后 HOLD。ARM_2 照旧 hold，程序也不退出。
+
+- 要恢复透明手拖：Ctrl+C 结束程序，再重新运行。
+- 速度再大也照样软停止，只是减速时间和停止距离更长：停止距离约为 速度² ÷ (2 × 0.5 m/s²)，0.5 m/s 时约 25 cm。要停得更快就调大 `kStopMaxLinearDecel`。
+- Stop Sign 不是急停，急停用 E-stop。
+
+记日志：
+
+```bash
+sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --log logs/soft_stop_$(date +%Y%m%d_%H%M%S).csv
+```
+
+画图前先装一次 matplotlib（`.venv/bin/pip install matplotlib`），然后把文件名换成实际的：
+
+```bash
+.venv/bin/python script/plot_soft_stop.py logs/soft_stop_20261115_120000.csv
+```
+
+离线单元测试不连机器人：
+
+```bash
+cmake --build .build/script --target arm1_soft_stop_test && .build/script/arm1_soft_stop_test
+```
+
+参数、原理和真机测试顺序见 [README_arm1_soft_stop.md](README_arm1_soft_stop.md)。
 
 两个程序都可以加 `--help` 查看全部选项。
 
@@ -77,6 +115,7 @@ sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --p
 
 - 关节版 `arm1_transparent_arm2_hold_rt.cpp`：`kFloatingDamping`、`kFrictionCompScale`
 - 笛卡尔版 `arm1_transparent_arm2_hold_rt_cartesian.cpp`：`kPassiveForceControl`、`kForceAxis`、`kRotStiffness`、`kMaxLinearVel`、`kNullSpaceRefTracking`、`kForceCtrlFrame`
+- 笛卡尔版的软停止：同一个文件里"ARM_1 软停止：在这里调"一段，例如 `kStopMaxLinearDecel`、`kStopMaxAngularDecel`、`kStopMinTime`、`kStopStiffnessScale`
 
 ### 停下来之后
 
