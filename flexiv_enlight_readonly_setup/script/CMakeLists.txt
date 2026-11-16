@@ -12,6 +12,7 @@ set(flexiv_rdk_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.rdk-v2.1/lib/cmake/flexiv_rd
 find_package(flexiv_rdk 2.1 EXACT REQUIRED)
 
 # 手拖实验程序，每个源文件编成一个独立目标。
+# intermediate8_realtime_cartesian_floating_original.cpp 是 11-15 改成导纳控制之前的版本，只作对照，不编译。
 foreach(program
     arm1_transparent_arm2_hold_rt
     arm1_transparent_arm2_hold_rt_cartesian

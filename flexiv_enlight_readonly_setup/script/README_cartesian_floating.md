@@ -1,42 +1,76 @@
-# RT 6-DoF Cartesian floating
+# RT 笛卡尔导纳控制（intermediate8）
 
-`intermediate8_realtime_cartesian_floating.cpp` 是所附方案（RT 六维笛卡尔浮动）按本机重写的版本。方案原文件 `third_party/flexiv_rdk/example/intermediate8_realtime_cartesian_floating.cpp` 和 `example/CMakeLists.txt` 不动，只编译 `script/` 下这份。
+`intermediate8_realtime_cartesian_floating.cpp`：ARM_1 末端导纳控制，可以手拖；ARM_2 全程不动。
 
-## 控制方法：照方案，只有一处不同
+- 2026-11-15 从"降刚度浮动"（阻抗控制）改成导纳控制。文件名、可执行文件名没改。
+- 改之前的版本原样保留为 `intermediate8_realtime_cartesian_floating_original.cpp`，只作对照，不编译。那个版本的说明在 git 历史里（提交 6a09332 的这个文件）。
+- 所附方案的原文件 `third_party/flexiv_rdk/example/intermediate8_realtime_cartesian_floating.cpp` 和 `example/CMakeLists.txt` 不动，只编译 `script/` 下这份。
+- **状态：** 11-15 改的时候只做了离线检查：用 RDK 2.1 头文件编译通过，导纳的离散公式和解析解一致。还没有链接 RDK 库编译，也没有上真机。
 
-- ARM_1 六个笛卡尔轴都做位置控制，不自己解 IK。
-- **和方案不同：** 降刚度之后，ARM_1 的目标位姿每 1 ms 跟随实测位姿。方案的目标位姿一直锁在进入实时模式时的位姿，2026-11-03 实测刚度 0.10 时 ARM_1 像被弹簧拴在起点，推不动、松手弹回。跟随之后弹簧力约为 0，只剩阻尼：哪里都能拖，松手停在原地；没人推时是匀速漂，不会越漂越快。预热阶段（名义刚度）目标仍然锁在起点。
-- 刚度降到 `K_x_nom × --scale`，阻尼比用 `--zeta`（默认 RDK 名义值 0.7），两者都可以每个轴单独设。RDK 的笛卡尔模式没有逐关节（J1–J7）阻尼。因为目标跟随实测位姿，`--scale` 实际决定的是阻尼（阻尼 = 2 × Z_x × √(刚度 × 惯量)），越小越透明。0 时阻尼也是 0，没人推会越漂越快；程序不设速度限位，只能靠 E-stop 和控制器自带的保护停。
-- ARM_2 的零空间跟踪权重设为上限 1.0（RDK 默认 0.5）。11-03 实测默认值下 ARM_2 的 J1、J3 在零空间里反向漂，约 4 秒超过当时 0.01 rad 的停机检查（这个检查现已去掉）。
-- **每个轴单独锁定（2026-11-03 加 Rx Ry Rz 锁定，11-06 拆成每轴一个参数）：** 源码里是 `kLockX`、`kLockY`、`kLockZ`、`kLockRx`、`kLockRy`、`kLockRz`，改了要重新编译。
-  - `true` 是锁定：这个轴的目标一直是进入 ③ 时的值，不跟随实测值，刚度保持名义刚度 `K_x_nom`（RDK 允许的最大值）。
-  - `false` 是能拖。
-  - 默认 X Y Z 能拖、Rx Ry Rz 锁定，和原来的 `kLockRotation = true` 完全一样。
-  - 轴都是世界坐标系的，RDK 的笛卡尔运动控制一直用世界坐标系。
-  - 只锁一部分转动轴时，程序把"从起始姿态转到当前姿态"的旋转向量在锁定轴上的分量拉回 0，能拖的轴上不加弹簧力（`FollowPose`）。
-- `--passive`：能拖的 X Y Z 做被动零力控制，目标力 0。Rx Ry Rz 不做力控（力矩控制要六维力传感器，本机没有，10-30 实测被拒绝），能拖的 Rx Ry Rz 照样按刚度、阻尼比浮动。锁定的轴照样位置控制。2026-11-09 改成这样，之前 Rx Ry Rz 有能拖的轴时 `--passive` 会直接退出。
-- 先用名义刚度成功发满 100 次实时指令，再降刚度。
-- **和方案不同：** 不设方案里的速度、位置限位类停机检查（2026-11-03 按要求去掉），见下方"停机条件"。
+## 控制方法：导纳
+
+ARM_1 本身一直是硬的位置控制，手感由程序里的虚拟质量-阻尼模型决定：
+
+1. ARM_1 六个轴全程纯位置控制：名义刚度 `K_x_nom`、阻尼比 0.7（RDK 默认），不降刚度、不开力控，不自己解 IK。
+2. 每 1 ms 读末端外力 F = `tcp_wrench`：世界坐标系，手加在 TCP 上的力和力矩，本机由关节力矩估算。
+3. F 先过死区：力、力矩各自按合起来的大小算，不到死区当作 0，只有超过的部分进模型，所以过死区时不跳。
+4. 能拖的轴按 M·dv/dt + D·v = F 算出目标速度 v，积分出目标位姿，连同目标速度一起发出去，由名义刚度的位置控制跟踪。离散用 1 ms 的精确解（F 在 1 ms 内不变），M、D 取多大都不会数值发散。
+
+手感只由 M（`--mass`）、D（`--damping`）和死区决定，和机器人本身的刚度、阻尼无关：
+
+- 一直用力 F 推，最后匀速 (|F| − 死区)/D。D 越小越轻、越快。
+- M 越小，起动、变向越轻。太小容易抖，因为 `tcp_wrench` 是估算值，有噪声和滤波滞后。
+- 松手后速度按时间常数 M/D 衰减到 0，再滑 速度 × M/D 那么远停下，不弹回。默认 M/D：平移 0.6 s，转动 0.5 s。
+- 死区就是起动要用的最小力。② 清零的零点误差超出死区的部分，会让末端以 超出量/D 的速度一直走。转动的 D 小，最容易漂。
+
+和以前的降刚度浮动不同：以前目标跟随实测位姿、刚度降到 0，手直接推机器人，`tcp_wrench` 只记录不用。现在 `tcp_wrench` 是控制输入，机器人本身一直是硬的位置控制。
+
+其他：
+
+- **每个轴锁不锁：** 由源码里的 `kLockX`、`kLockY`、`kLockZ`、`kLockRx`、`kLockRy`、`kLockRz` 决定，改了要重新编译。默认 6 个轴都能拖。
+  - `true` 是锁定：目标速度一直是 0，目标保持进入 ③ 时的值，用名义刚度锁住，和 ARM_2 hold 一样硬。这个轴上的外力不进导纳模型。
+  - 都是世界坐标系的轴：RDK 的笛卡尔运动控制一直用世界坐标系，和 `tcp_wrench` 同一个顺序。
+  - 只锁一部分转动轴时，绕两个世界轴的转动叠起来，第三个轴上也会带出一点。所以程序把"从起始姿态转到目标姿态"的旋转向量在锁定轴上的分量清零。
+- **外力是估算的：** 碰肘部等末端以外的地方，估算出的末端外力也会让末端动。
+- **肘部（零空间）：** 不归末端导纳管，由零空间姿态控制拉回进入 ③ 时的关节姿态。权重默认 0.1，是 RDK 允许的最小值，不等于关掉。`--nullspace-follow` 时参考姿态每 10 ms 跟随实测关节位置，基本不再拉回。
+- **开始导纳：** 先把目标锁在进入 ③ 时的位姿，成功发满 100 次实时指令，再开始导纳。从当前目标、速度 0 开始积分，不改刚度、不切换控制模式，目标不跳。
+- **ARM_2：** 6 轴纯位置控制、名义刚度，目标位姿一直是进入 ③ 时的末端位姿。零空间权重 1.0：11-03 实测默认 0.5 时，ARM_2 的 J1、J3 在零空间里反向漂。
+- **被动力控：** IDLE 下把 ARM_1 的被动力控关掉。以前的程序（降刚度浮动的 `--passive` 等）可能开过，导纳用不到力控。
+
+## 默认值怎么来的
+
+取最透明的一组：用 `compare_transparency.py` 分析 `logs/` 里降刚度浮动的日志，拟合 外力 = 阻尼×速度 + 惯量×加速度 + 常数，默认值取各次结果的最小值附近。用到的日志是 `i8_ns010*`、`i8_nsfollow`、`i8_passive*`；`i8_active*` 阻尼大得多，没算进来。
+
+| 参数 | 默认 | 日志里的值 |
+|---|---|---|
+| 平移质量 M | 3 kg | 平移惯量项 2.6–9.8 kg |
+| 转动惯量 M | 0.05 kg·m² | 转动惯量项 0.04–0.44 kg·m² |
+| 平移阻尼 D | 5 N·s/m | 平移阻尼 4.2–15.7 N·s/m |
+| 转动阻尼 D | 0.1 N·m·s/rad | 只有 i8_ns010、i8_nsfollow 拟合出正值（0.14、0.10），其余是负的 |
+| 力死区 | 0.5 N | 静止时 \|F\| 中位数大多 0.02–0.30 N，起动力中位数 0.38–0.69 N |
+| 力矩死区 | 0.05 N·m | 静止时 \|M\| 的 95% 分位 0.01–0.03 N·m（② 清零后、home 附近；离 home 远了零点误差会变大） |
+| 零空间 | 权重 0.1，不跟随 | i8_nsfollow 和 i8_ns010 互有高低，没有明显更透明 |
+
+透明的代价：起动、刹车都靠手，松手后还会滑一段。抖或漂得受不了，就调大 `--mass`、`--damping`。
 
 ## 运行流程：照 `arm1_transparent_arm2_hold_rt.cpp`
 
 1. 检查、上伺服：有故障就退出（加 `--clear-fault` 先清）。要有 ARM_1、ARM_2，都是 7 轴；没有外部轴；机器人静止。
-2. IDLE 下设置 passive force control，切到 `NRT_PRIMITIVE_EXECUTION`。
+2. IDLE 下关掉 ARM_1 的被动力控，切到 `NRT_PRIMITIVE_EXECUTION`。
 3. ① 回正：一条原语指令 `{ARM_1: Home, ARM_2: Hold}`（`--no-home` 跳过）。
-4. ② 受力回 0：一条原语指令 `{ARM_1: ZeroFTSensor, ARM_2: Hold}`。
-5. ③ 切到 `RT_CARTESIAN_MOTION_FORCE`，从这里到结束一直是实时模式，不再切换。每 1 ms 的 `StreamCartesianMotionForce` 同时带两条臂：ARM_1 的浮动指令，ARM_2 的 hold 位姿（6 轴纯位置控制、名义刚度，目标是进入 ③ 时的位姿）。
-6. 发满 100 次后，ARM_1 能拖的轴的目标改成跟随实测值（锁定的轴不跟随），再在实时模式里把能拖的轴的刚度降下来（或给能拖的轴开被动力控）。这是参数设置，不切换控制模式，两条臂的指令照常每 1 ms 发。
-7. Ctrl+C 或机器人不能继续（见"停机条件"）：先停实时任务，再 `Stop()`，机器人进入 IDLE 并保持当前位置。最后打印 ③ 期间 ARM_2 的最大偏离和速度，以及拖动期间的控制模式检查结果。
+4. ② 受力回 0：一条原语指令 `{ARM_1: ZeroFTSensor, ARM_2: Hold}`。导纳的输入就是这个外力，零点不准末端会自己走，这期间不要碰 ARM_1。
+5. ③ 切到 `RT_CARTESIAN_MOTION_FORCE`，从这里到结束一直是实时模式，不再切换。两条臂都设成 6 轴纯位置控制、名义刚度，之后不再改。每 1 ms 的 `StreamCartesianMotionForce` 同时带两条臂。
+6. 发满 100 次后开始导纳，打印"ARM_1 导纳控制已开始"。
+7. Ctrl+C 或碰到停机条件（见下）：先停实时任务，再 `Stop()`，机器人进入 IDLE 并保持当前位置。最后打印：
+   - ③ 期间 ARM_2 的最大偏离和速度；
+   - 导纳期间 ARM_1 的最大跟踪误差；
+   - 拖动期间的控制模式检查结果。
 
-每次给 ARM_1 发指令都同时给 ARM_2 发 hold，不单独控制一条臂。
-
-另外一处：
-
-- `--log=FILE.csv`：浮动期间由主线程按 100 Hz 记录，实时任务里不读写文件。
+每次给 ARM_1 发指令都同时给 ARM_2 发 hold，不单独控制一条臂。`--log=FILE.csv` 由主线程按 100 Hz 记录，实时任务里不读写文件。
 
 ## 编译
 
-在 RDK 2.1 已安装到 `.rdk-v2.1` 的 Ubuntu 机器上，从 `rdk/flexiv_enlight_readonly_setup` 运行。`script/CMakeLists.txt` 新加了这个目标，第一次要重新配置：
+在 RDK 2.1 已安装到 `.rdk-v2.1` 的 Ubuntu 机器上，从 `rdk/flexiv_enlight_readonly_setup` 运行：
 
 ```bash
 cmake -S script -B .build/script && cmake --build .build/script --target intermediate8_realtime_cartesian_floating
@@ -44,39 +78,54 @@ cmake -S script -B .build/script && cmake --build .build/script --target interme
 
 ## 运行
 
-一次只运行一条，结束后检查机器人状态再跑下一条。手放在 E-stop 旁边。① 回正前确认 ARM_1 路径上没有东西；② 期间不要碰 ARM_1；③ 降刚度和程序结束时扶住 ARM_1。
+一次只运行一条，结束后检查机器人状态再跑下一条。手放在 E-stop 旁边。
+
+- ① 回正前确认 ARM_1 路径上没有东西。
+- ② 期间不要碰 ARM_1。
+- 看到"ARM_1 导纳控制已开始"后，如果零点误差大，末端可能自己慢慢走，手放在旁边随时扶住。
+
+先用默认值：
 
 ```bash
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.10
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.05
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.02
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.00
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034
+```
+
+觉得抖或者太飘，就把质量、阻尼调大一些：
+
+```bash
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --mass=5 --damping=10
+```
+
+平移、转动分开设，6 个数按 X,Y,Z,Rx,Ry,Rz：
+
+```bash
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --mass=3,3,3,0.1,0.1,0.1 --damping=5,5,5,0.2,0.2,0.2
 ```
 
 | 选项 | 作用 |
 |---|---|
-| `--scale=S` | ARM_1 能拖的轴的刚度 = `K_x_nom × S`，范围 [0, 1]，默认 0。锁定的轴不受影响。1 个数 = 6 个轴都用它；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个 |
-| `--zeta=Z` | ARM_1 能拖的轴的阻尼比 Z_x，范围 [0.3, 0.8]，默认 0.7（锁定的轴固定 0.7）。刚度为 0 的轴不起作用；1 个数或 6 个数，同 `--scale`。`--passive`、`--active` 时对 X Y Z 不起作用 |
-| `--nullspace=W` | 肘部（零空间）拉回进入 ③ 时姿态的权重，范围 [0.1, 1]，默认 0.5。0.1 是 RDK 允许的最小值，不等于关闭零空间控制 |
-| `--passive` | 能拖的 X Y Z 做被动零力控制，这几个轴上 `--scale`、`--zeta` 不起作用；Rx Ry Rz 不做力控，能拖的 Rx Ry Rz 照样按 `--scale`、`--zeta` 浮动（`--scale=0` 时零刚度自由转），不需要六维力传感器。锁定的轴照样锁定。不能和 `--active` 同时用 |
-| `--active` | 能拖的 X Y Z 轴做主动零力控制。**2026-11-06 实测比不开重得多**：平移阻尼 141–202 N·s/m，不开时 7–10 N·s/m，是主动力控多出来的阻尼，不要用来变轻。Rx Ry Rz 照样位置控制，不需要六维力传感器。末端力估算有偏差时没人推也会自己走，最快到 `kActiveMaxLinearVel`（默认 1.0 m/s）。不能和 `--passive` 同时用 |
+| `--mass=M` | 虚拟质量，必须 > 0。X Y Z 单位 kg，Rx Ry Rz 单位 kg·m²，默认 3,3,3,0.05,0.05,0.05。越小起动、变向越轻，太小会抖。1 个数 = 6 个轴都用它；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个 |
+| `--damping=D` | 虚拟阻尼，必须 > 0。X Y Z 单位 N·s/m，Rx Ry Rz 单位 N·m·s/rad，默认 5,5,5,0.1,0.1,0.1。一直用力 F 推最后匀速 (\|F\| − 死区)/D：越小越轻、越快，松手后也滑得越远。1 个数或 6 个数，同 `--mass` |
+| `--nullspace=W` | 肘部（零空间）拉回进入 ③ 时姿态的权重，范围 [0.1, 1]，默认 0.1 |
 | `--nullspace-follow` | 肘部参考姿态每 10 ms 跟随实测关节位置，肘部不再被拉回进入 ③ 时的姿态（J1 J2 J3 一起转、末端不动的那种动作变轻）。没人推时肘部可能自己漂 |
-| `--log=FILE.csv` | 浮动期间 100 Hz 记录 ARM_1 的 `tcp_pose`、`tcp_twist`、`tcp_wrench`、`q`、`dtheta`。文件属主是 root。文件已经存在时程序不运行，不会覆盖旧记录 |
-| `--no-home` | 跳过 ① 回正，在当前姿态受力回 0 后直接浮动 |
+| `--log=FILE.csv` | 导纳期间 100 Hz 记录 ARM_1 的 `tcp_pose`、`tcp_twist`、`tcp_wrench`、`q`、`dtheta`。文件属主是 root。文件已经存在时程序不运行，不会覆盖旧记录 |
+| `--no-home` | 跳过 ① 回正，在当前姿态受力回 0 后直接开始 |
 | `--clear-fault` | 启动时有故障先尝试清除；不加则直接退出 |
 | `-h`, `--help` | 打印用法，不连接机器人 |
 
-例如零刚度、最弱零空间跟踪，并记录数据：
+以前的 `--scale`、`--zeta`、`--passive`、`--active` 都去掉了：导纳不降刚度，也不用力控。
 
-```bash
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --scale=0.00 --nullspace=0.1 --log=logs/i8_scale0_ns010_$(date +%Y%m%d_%H%M%S).csv
-```
+下面这些没有命令行参数，改源码后要重新编译：
 
-在本机比较被动力控的手感，用 `arm1_transparent_arm2_hold_rt_cartesian --passive`：X Y Z 被动零力，Rx Ry Rz 零转动刚度，见 [COMMANDS.md](COMMANDS.md)。
+- 死区：`kForceDeadband`、`kMomentDeadband`
+- 锁定：`kLockX` … `kLockRz`
+- 跟踪误差上限：`kMaxTrackPositionError`、`kMaxTrackAngleError`
+
+要比较力控（被动零力控制）的手感，用 `arm1_transparent_arm2_hold_rt_cartesian --passive`，见 [COMMANDS.md](COMMANDS.md)。
 
 ## 停机条件
 
-程序不设速度、位置限位类的停机检查。ARM_1 末端速度、离起点的位移、关节离极限的余量、关节速度，以及 ARM_2 偏离 hold 位置，都不检查。ARM_2 的偏离仍然记录，结束时打印。拖动时手放在 E-stop 旁边。控制器自带的保护（关节硬极限、安全设置里的限速、碰撞检测等）RDK 关不掉，照常有效。
+程序不设速度、位置限位类的停机检查。下面这些都不检查：ARM_1 末端速度、离起点的位移、关节离极限的余量、关节速度，以及 ARM_2 偏离 hold 位置。ARM_2 的偏离仍然记录，结束时打印。拖动时手放在 E-stop 旁边。控制器自带的保护（关节硬极限、安全设置里的限速、碰撞检测等）RDK 关不掉，照常有效。
 
 程序只在机器人自己不能继续时停：
 
@@ -85,22 +134,42 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 | 断线、E-stop、故障、未就绪、实时指令迟到过多 | 检测到即停 | ①②③ |
 | 控制模式被切走 | ①② 不是 `NRT_PRIMITIVE_EXECUTION`，③ 不是 `RT_CARTESIAN_MOTION_FORCE` | ①②③ |
 | 实时任务心跳 | 100 ms 没有成功发出指令 | ③ |
+| ARM_1 跟不上导纳目标 | 实测位姿离上一次发出的目标超过 10 mm 或 0.03 rad | ③ 导纳期间 |
+| `tcp_wrench` 不是有限值 | 检测到即停 | ③ 导纳期间 |
+
+"跟不上导纳目标"这一条是改成导纳时新加的，原因是导纳目标由模型积分出来，不看机器人实际在哪：
+
+- 机器人被挡住、到关节极限、被控制器限速时跟不上，目标还会接着往前走，名义刚度会推得越来越狠。
+- 10 mm、0.03 rad 在名义刚度下大约是 150 N、60 N·m。
+- 它不是速度、位置限位：拖得多快、多远都不查。
+- 结束时会打印导纳期间的最大跟踪误差，按实测再调 `kMaxTrackPositionError`、`kMaxTrackAngleError`。
 
 ## 拖动期间全程实时模式
 
 只有 ①② 用非实时模式 `NRT_PRIMITIVE_EXECUTION`（Home、ZeroFTSensor 只有原语版本），这时 ARM_1 由原语控制，不能拖。拖动只在 ③：
 
 - ③ 开头切到 `RT_CARTESIAN_MOTION_FORCE` 之后，直到结束时 `Stop()`（进入 IDLE），程序没有再切换控制模式。
-- ARM_1 的指令由 1 kHz 实时调度器每 1 ms 发一次 `StreamCartesianMotionForce`（实时接口）。降刚度用的 `SetCartesianImpedance` 只是实时模式里的参数设置，不切换控制模式。
+- 刚度和力控轴只在实时流开始之前设一次。导纳期间，实时任务每 1 ms 只更新 ARM_1 的目标位姿和目标速度。
+- `--nullspace-follow` 时，主线程每 10 ms 调一次 `SetNullSpacePosture`。这是实时模式里的参数设置，不切换控制模式。
 - 主线程每 10 ms 查一次控制模式，不是 `RT_CARTESIAN_MOTION_FORCE` 就停机，并打印"控制模式被切到 ……"。
 - 结束时打印一行"拖动 X 秒期间主线程每 10 ms 查一次控制模式，N 次都是 RT_CARTESIAN_MOTION_FORCE；③ 实时任务共发出 M 次 StreamCartesianMotionForce"。M 大约是 ③ 的秒数 × 1000。
 
-正常 Ctrl+C 结束时没有"已停止"这一行，退出码 0。"已停止：……"后面是停机原因，退出码 1。参数错误或没有 root，退出码 2。
+退出码：
+
+- 正常 Ctrl+C 结束：没有"已停止"这一行，退出码 0。
+- "已停止：……"：后面是停机原因，退出码 1。
+- 参数错误或没有 root：退出码 2。
 
 ## 用日志比较透明度
 
-`tcp_wrench` 是世界坐标系下的末端外力，本机由关节力矩估算，② 已清零。按所附方案第 7 节比较三项：
+`--log` 的格式没变：从导纳开始起 100 Hz 记一行。每行是 `t_s`（导纳开始后的秒数）和 ARM_1 的 `tcp_pose`、`tcp_twist`、`tcp_wrench`、`q`、`dtheta`，都在世界坐标系；`tcp_wrench` 是 ② 清零之后的读数。
 
-- 起动拖动力：缓慢推动时的 `tcp_wrench`
-- 运动阻力：相近 TCP 速度下的 `tcp_wrench`
-- 松手漂移：松手后的 `tcp_pose` 和 `tcp_twist`
+`compare_transparency.py` 照样能用，拖法和命令见 [COMMANDS.md](COMMANDS.md) 的"量化对比透明度"。
+
+导纳下拟合出的结果可以直接对照参数。理想情况下：
+
+- 平移阻尼 ≈ `--damping`
+- 惯量项 ≈ `--mass`
+- 常数项 ≈ 力死区 0.5 N
+
+差得多，说明 ARM_1 没跟上导纳目标，或者外力估算有偏差。以前降刚度浮动的日志（`logs/i8_ns010*`、`logs/i8_passive*` 等）也可以放在一起比。

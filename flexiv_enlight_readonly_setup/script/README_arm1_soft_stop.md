@@ -42,7 +42,7 @@
    所以实时任务锁存 SOFT_STOP 之后，主线程会把 ARM_1 切回运动控制，这一步不在 1 kHz 回调里：先调一次 `SetCartesianImpedance(ARM_1, K_stop)`，再调一次 `SetForceControlAxis(ARM_1, 全 false)`。ARM_2 不碰。
 
    - 这不是刚度渐增，但同样是在实时流运行期间调用阻塞接口。
-   - 支持这样做的依据：官方例子 `third_party/flexiv_rdk/example/intermediate5_realtime_cartesian_pure_motion_control.cpp` 在实时流运行期间调用 `SetCartesianImpedance`（112、130 行）。本项目的 `intermediate8_realtime_cartesian_floating.cpp` 从 11-03 起，一直在主线程里、实时流运行期间调用 `SetForceControlAxis`、`SetCartesianImpedance`、`SetNullSpacePosture`。
+   - 支持这样做的依据：官方例子 `third_party/flexiv_rdk/example/intermediate5_realtime_cartesian_pure_motion_control.cpp` 在实时流运行期间调用 `SetCartesianImpedance`（112、130 行）。本项目以前的降刚度浮动版 intermediate8（现在保留为 `intermediate8_realtime_cartesian_floating_original.cpp`）从 11-03 起，一直在主线程里、实时流运行期间调用 `SetForceControlAxis`、`SetCartesianImpedance`、`SetNullSpacePosture`。11-15 改成导纳控制之后，intermediate8 在实时流运行期间只在 `--nullspace-follow` 时调用 `SetNullSpacePosture`。
    - **还没有厂家书面确认**：另一个线程并发调用、对同一个 `Robot` 实例是否线程安全、允许多快的调用频率。Test B 要用日志里的 `impedance_request_latency_ms` 和 `rt_cycle_us` 确认这次切换不破坏 1 kHz 实时流。
    - 切换完成之前的几十毫秒里，ARM_1 仍按透明方式滑行。轨迹从锁存那一刻算起，所以切换时目标和实际只差很少：闭环模拟中延迟 30 ms、速度 0.1 m/s 时差 0.3 mm。
 
