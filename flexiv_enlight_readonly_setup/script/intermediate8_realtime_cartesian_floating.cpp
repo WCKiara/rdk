@@ -106,34 +106,47 @@ constexpr double kRtPeriod = 0.001;
 // 导纳模型：M·dv/dt + D·v = F。F 是 tcp_wrench 过了死区之后的值，v 是目标速度，积分出目标位姿。
 // Admittance model: M·dv/dt + D·v = F, where F is tcp_wrench after the deadband and v is the target velocity,
 // integrated into the target pose.
-// 默认值取最透明的一组：用 compare_transparency.py 分析 logs/ 里的降刚度浮动日志（i8_ns010*、i8_nsfollow、i8_passive*；
+// 11-15 的默认值取最透明的一组：用 compare_transparency.py 分析 logs/ 里的降刚度浮动日志（i8_ns010*、i8_nsfollow、i8_passive*；
 // i8_active* 阻尼大得多，不算），拟合 外力 = 阻尼×速度 + 惯量×加速度 + 常数，取各次里的最小值附近。
-// Defaults are the most transparent set: compare_transparency.py fits force = damping×velocity + inertia×acceleration
-// + offset on the reduced-stiffness floating logs in logs/ (i8_ns010*, i8_nsfollow, i8_passive*; i8_active* is far
-// more damped and left out), and the defaults sit near the smallest fitted values.
+// The 11-15 defaults were the most transparent set: compare_transparency.py fits force = damping×velocity
+// + inertia×acceleration + offset on the reduced-stiffness floating logs in logs/ (i8_ns010*, i8_nsfollow,
+// i8_passive*; i8_active* is far more damped and left out), and they sat near the smallest fitted values.
 // 透明的代价：起动、刹车都靠手，松手后还会滑一段；抖或漂得受不了就用 --mass、--damping 调大。
 // The price of transparency: the hand does all the starting and braking, and the arm coasts after release; raise
 // --mass / --damping if it shakes or drifts too much.
+// 11-16 真机：上面那组（平移 3 kg、5 N·s/m，转动 0.05 kg·m²、0.1 N·m·s/rad，logs/i8_adm_m3_d5_20261116_174025.csv）
+//   手一碰 1.2 s 内就失控：约 2 Hz 越摆越大，外力到 16 N、末端 0.34 m/s、J4 ±0.8 rad/s、J7 1.37 rad/s；平移 5 kg、
+//   10 N·s/m 的 3 次都稳。所以默认平移改成 5、10，转动（扭末端主要靠 J7）改成原来的 3 倍 0.15、0.3，时间常数都是 0.5 s。
+// On the robot on 11-16 the set above (3 kg, 5 N·s/m translational; 0.05 kg·m², 0.1 N·m·s/rad rotational;
+//   logs/i8_adm_m3_d5_20261116_174025.csv) ran away within 1.2 s of a touch: a growing ~2 Hz oscillation, wrench up to
+//   16 N, TCP 0.34 m/s, J4 ±0.8 rad/s, J7 1.37 rad/s. The three runs at 5 kg, 10 N·s/m were stable. So the defaults are
+//   now 5, 10 translational and 3× the old rotational values, 0.15, 0.3 (twisting the TCP mostly turns J7); both
+//   time constants are 0.5 s.
 //
 // kAdmittanceMass：虚拟质量 M，X Y Z 是质量 [kg]，Rx Ry Rz 是转动惯量 [kg·m²]。越小起动、变向越轻；太小容易抖
 //   （tcp_wrench 是估算值，有噪声和滤波滞后），抖了就调大。浮动日志里平移惯量项 2.6–9.8 kg、转动 0.04–0.44 kg·m²。
-//   必须 > 0。命令行 --mass=M（6 个轴都用 M）或 --mass=M1,M2,M3,M4,M5,M6。
+//   必须 > 0。命令行 --mass=M（只改 X Y Z，Rx Ry Rz 保持这里的值）或 --mass=M1,M2,M3,M4,M5,M6。
 // kAdmittanceMass: virtual mass M, X Y Z as mass [kg], Rx Ry Rz as rotational inertia [kg·m²]. Smaller starts and turns
 //   more easily; too small tends to shake (tcp_wrench is an estimate with noise and filter lag), so raise it if it does.
 //   The floating logs fit 2.6–9.8 kg translational and 0.04–0.44 kg·m² rotational inertia. Must be > 0.
-//   Command line: --mass=M (all 6 axes) or --mass=M1,M2,M3,M4,M5,M6.
-constexpr std::array<double, rdk::kCartDoF> kAdmittanceMass = {3.0, 3.0, 3.0, 0.05, 0.05, 0.05};
+//   Command line: --mass=M (X Y Z only; Rx Ry Rz keep the values here) or --mass=M1,M2,M3,M4,M5,M6.
+constexpr std::array<double, rdk::kCartDoF> kAdmittanceMass = {5.0, 5.0, 5.0, 0.15, 0.15, 0.15};
 // kAdmittanceDamping：虚拟阻尼 D，X Y Z [N·s/m]，Rx Ry Rz [N·m·s/rad]。一直用力 F 推，最后匀速 (|F| − 死区)/D：越小越轻、
-//   越快。松手后速度按时间常数 M/D 衰减到 0，再滑 速度×M/D 那么远停下，不弹回；默认 M/D 平移 0.6 s、转动 0.5 s。
+//   越快。松手后速度按时间常数 M/D 衰减到 0，再滑 速度×M/D 那么远停下，不弹回；默认 M/D 平移、转动都是 0.5 s。
 //   浮动日志里平移阻尼 4.2–15.7 N·s/m；转动阻尼只有 i8_ns010、i8_nsfollow 拟合出正值 0.14、0.10 N·m·s/rad，其余是负的
-//   （转动没有阻尼，转起来要靠手刹住）。必须 > 0。命令行 --damping=D 或 --damping=D1,D2,D3,D4,D5,D6。
+//   （转动没有阻尼，转起来要靠手刹住）。必须 > 0。命令行 --damping=D（只改 X Y Z）或 --damping=D1,D2,D3,D4,D5,D6。
 // kAdmittanceDamping: virtual damping D, X Y Z [N·s/m], Rx Ry Rz [N·m·s/rad]. A steady push F ends at constant speed
 //   (|F| − deadband)/D: smaller is lighter and faster. After release the speed decays with time constant M/D and the
-//   arm coasts speed×M/D before it stops, with no spring-back; default M/D is 0.6 s translational, 0.5 s rotational.
+//   arm coasts speed×M/D before it stops, with no spring-back; default M/D is 0.5 s, translational and rotational.
 //   The floating logs fit 4.2–15.7 N·s/m translational damping; only i8_ns010 and i8_nsfollow fit positive rotational
 //   damping (0.14, 0.10 N·m·s/rad), the rest negative (no rotational damping, the hand had to brake). Must be > 0.
-//   Command line: --damping=D or --damping=D1,D2,D3,D4,D5,D6.
-constexpr std::array<double, rdk::kCartDoF> kAdmittanceDamping = {5.0, 5.0, 5.0, 0.1, 0.1, 0.1};
+//   Command line: --damping=D (X Y Z only) or --damping=D1,D2,D3,D4,D5,D6.
+// 1 个数只改 X Y Z：转动的单位不同，平移的数用到转动上会重 100 倍。11-16 用 --mass=5 --damping=10 时 6 个轴都是 5、10，
+//   转动阻尼是默认的 100 倍，扭末端时 J7 几乎不转（23 秒只转了 7–12°，最快 0.15 rad/s）。
+// One number sets X Y Z only: the rotation units differ, and a translational value is 100× too heavy for rotation. On
+//   11-16, --mass=5 --damping=10 put 5 and 10 on all 6 axes, 100× the default rotational damping, and twisting the
+//   TCP barely turned J7 (7–12° in 23 s, at most 0.15 rad/s).
+constexpr std::array<double, rdk::kCartDoF> kAdmittanceDamping = {10.0, 10.0, 10.0, 0.3, 0.3, 0.3};
 // kForceDeadband、kMomentDeadband：F 的死区，力 [N]、力矩 [N·m]。能拖的轴上的力（力矩）合起来不到这个值就当作 0，超过的
 //   部分才进导纳模型，过死区时不跳。死区就是起动要用的最小力：越小越透明，但 tcp_wrench 零点误差超出死区的部分会让末端
 //   以 超出量/D 的速度一直走（转动的 D 小，最容易漂）。浮动日志里静止时 |F| 中位数大多 0.02–0.30 N、起动力中位数
@@ -321,9 +334,10 @@ void PrintHelp()
                  "  <序列号>          完整序列号，不要有空格，例如 Enlight-LL-123456\n"
                  "  --mass=M          覆盖 kAdmittanceMass：ARM_1 能拖的轴（kLockX … kLockRz 为 false）的虚拟质量 > 0，\n"
                  "                    X Y Z [kg]、Rx Ry Rz [kg·m²]；越小起动越轻，太小会抖。\n"
-                 "                    1 个数 = 6 个轴都用它；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个，例如 --mass=5,5,5,0.1,0.1,0.1\n"
+                 "                    1 个数 = 只改 X Y Z，Rx Ry Rz 保持 kAdmittanceMass；\n"
+                 "                    逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个，例如 --mass=5,5,5,0.3,0.3,0.3\n"
                  "  --damping=D       覆盖 kAdmittanceDamping：虚拟阻尼 > 0，X Y Z [N·s/m]、Rx Ry Rz [N·m·s/rad]；\n"
-                 "                    一直用力 F 推最后匀速 (F − 死区)/D，越小越轻。1 个数或逗号分开的 6 个数，同 --mass\n"
+                 "                    一直用力 F 推最后匀速 (F − 死区)/D，越小越轻。1 个数（只改 X Y Z）或逗号分开的 6 个数，同 --mass\n"
                  "  --nullspace=W     覆盖 kNullSpaceRefTracking：肘部拉回参考姿态的权重 [0.1, 1]\n"
                  "  --nullspace-follow\n"
                  "                    覆盖 kNullSpaceFollow：肘部参考姿态每 10 ms 跟随实测关节位置，肘部不再被拉回；\n"
@@ -362,8 +376,8 @@ bool ParseNumber(const char* text, double& value)  // 整个字符串是一个�
     return end != text && *end == '\0' && std::isfinite(value);
 }
 
-// text 是 1 个数（6 个轴都用它）或逗号分开的 6 个数（X Y Z Rx Ry Rz 各一个）才算成功。
-// Succeeds only if text is 1 number (used for all 6 axes) or 6 comma-separated numbers (one per X Y Z Rx Ry Rz).
+// text 是 1 个数（只改 X Y Z，Rx Ry Rz 不变）或逗号分开的 6 个数（X Y Z Rx Ry Rz 各一个）才算成功。
+// Succeeds only if text is 1 number (sets X Y Z, leaves Rx Ry Rz) or 6 comma-separated numbers (one per X Y Z Rx Ry Rz).
 bool ParseAxisValues(const std::string& text, std::array<double, rdk::kCartDoF>& values)
 {
     std::vector<double> parsed;
@@ -379,8 +393,10 @@ bool ParseAxisValues(const std::string& text, std::array<double, rdk::kCartDoF>&
     if (text.ends_with(",") || (parsed.size() != 1 && parsed.size() != values.size())) {
         return false;
     }
-    for (size_t i = 0; i < values.size(); ++i) {
-        values[i] = parsed.size() == 1 ? parsed[0] : parsed[i];
+    if (parsed.size() == 1) {
+        std::fill(values.begin(), values.begin() + 3, parsed[0]);
+    } else {
+        std::copy(parsed.begin(), parsed.end(), values.begin());
     }
     return true;
 }

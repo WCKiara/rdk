@@ -20,7 +20,7 @@ ARM_1 本身一直是硬的位置控制，手感由程序里的虚拟质量-阻�
 
 - 一直用力 F 推，最后匀速 (|F| − 死区)/D。D 越小越轻、越快。
 - M 越小，起动、变向越轻。太小容易抖，因为 `tcp_wrench` 是估算值，有噪声和滤波滞后。
-- 松手后速度按时间常数 M/D 衰减到 0，再滑 速度 × M/D 那么远停下，不弹回。默认 M/D：平移 0.6 s，转动 0.5 s。
+- 松手后速度按时间常数 M/D 衰减到 0，再滑 速度 × M/D 那么远停下，不弹回。默认 M/D：平移、转动都是 0.5 s。
 - 死区就是起动要用的最小力。② 清零的零点误差超出死区的部分，会让末端以 超出量/D 的速度一直走。转动的 D 小，最容易漂。
 
 和以前的降刚度浮动不同：以前目标跟随实测位姿、刚度降到 0，手直接推机器人，`tcp_wrench` 只记录不用。现在 `tcp_wrench` 是控制输入，机器人本身一直是硬的位置控制。
@@ -90,22 +90,26 @@ cmake -S script -B .build/script && cmake --build .build/script --target interme
 sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034
 ```
 
-觉得抖或者太飘，就把质量、阻尼调大一些：
+觉得抖或者太飘，就把质量、阻尼调大一些。1 个数只改平移 X Y Z，转动保持默认的 0.15、0.3，扭末端时 J7 照样转得动：
 
 ```bash
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --mass=5 --damping=10
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --mass=8 --damping=15
 ```
+
+转动的单位和平移不同：手握在离 TCP 约 r = 0.1 m 处时，转动和平移手感差不多要 M_转 ≈ M·r²、D_转 ≈ D·r²，也就是平移的 1/100 左右。11-16 以前 1 个数会用到 6 个轴，`--mass=5 --damping=10` 让转动阻尼变成 10 N·m·s/rad（当时默认 0.1 的 100 倍），扭末端时 J7 几乎不转（23 秒只转了 7–12°），所以现在 1 个数只改 X Y Z。
+
+默认值 11-16 调过一次：原来最透明的那组（平移 3 kg、5 N·s/m，转动 0.05 kg·m²、0.1 N·m·s/rad）真机上手一碰 1.2 s 内就失控，约 2 Hz 越摆越大，外力到 16 N、末端 0.34 m/s、J7 1.37 rad/s（`logs/i8_adm_m3_d5_20261116_174025.csv`）。平移 5 kg、10 N·s/m 的 3 次都稳，所以默认平移改成 5、10，转动改成原来的 3 倍 0.15、0.3。往小调要一点一点试，开始摆就调回去。
 
 平移、转动分开设，6 个数按 X,Y,Z,Rx,Ry,Rz：
 
 ```bash
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --mass=3,3,3,0.1,0.1,0.1 --damping=5,5,5,0.2,0.2,0.2
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --mass=5,5,5,0.3,0.3,0.3 --damping=10,10,10,0.6,0.6,0.6
 ```
 
 | 选项 | 作用 |
 |---|---|
-| `--mass=M` | 虚拟质量，必须 > 0。X Y Z 单位 kg，Rx Ry Rz 单位 kg·m²，默认 3,3,3,0.05,0.05,0.05。越小起动、变向越轻，太小会抖。1 个数 = 6 个轴都用它；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个 |
-| `--damping=D` | 虚拟阻尼，必须 > 0。X Y Z 单位 N·s/m，Rx Ry Rz 单位 N·m·s/rad，默认 5,5,5,0.1,0.1,0.1。一直用力 F 推最后匀速 (\|F\| − 死区)/D：越小越轻、越快，松手后也滑得越远。1 个数或 6 个数，同 `--mass` |
+| `--mass=M` | 虚拟质量，必须 > 0。X Y Z 单位 kg，Rx Ry Rz 单位 kg·m²，默认 5,5,5,0.15,0.15,0.15。越小起动、变向越轻，太小会抖。1 个数 = 只改 X Y Z，Rx Ry Rz 保持默认；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个 |
+| `--damping=D` | 虚拟阻尼，必须 > 0。X Y Z 单位 N·s/m，Rx Ry Rz 单位 N·m·s/rad，默认 10,10,10,0.3,0.3,0.3。一直用力 F 推最后匀速 (\|F\| − 死区)/D：越小越轻、越快，松手后也滑得越远。1 个数（只改 X Y Z）或 6 个数，同 `--mass` |
 | `--nullspace=W` | 肘部（零空间）拉回进入 ③ 时姿态的权重，范围 [0.1, 1]，默认 0.1 |
 | `--nullspace-follow` | 肘部参考姿态每 10 ms 跟随实测关节位置，肘部不再被拉回进入 ③ 时的姿态（J1 J2 J3 一起转、末端不动的那种动作变轻）。没人推时肘部可能自己漂 |
 | `--log=FILE.csv` | 导纳期间 100 Hz 记录 ARM_1 的 `tcp_pose`、`tcp_twist`、`tcp_wrench`、`q`、`dtheta`。文件属主是 root。文件已经存在时程序不运行，不会覆盖旧记录 |

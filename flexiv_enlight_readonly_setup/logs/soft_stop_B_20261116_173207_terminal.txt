@@ -1,0 +1,25 @@
+[2026-11-16 17:32:09.566] [info] | | | | | | | | | |  Flexiv RDK v2.1  | | | | | | | | | |
+[2026-11-16 17:32:09.578] [info] [flexiv::rdk::Robot] Searching for [Enlight-LL-062034] ...
+[2026-11-16 17:32:09.625] [info] [flexiv::rdk::Robot] Connected to the robot
+[2026-11-16 17:32:09.778] [info] [flexiv::rdk::Robot] Validated license: RDK-Professional
+[2026-11-16 17:32:09.779] [info] [flexiv::rdk::Robot] Initialization complete
+机器人 Enlight-LL-062034，控制器软件版本 v4.1
+[2026-11-16 17:32:09.799] [info] [flexiv::rdk::Robot] Control mode switched to [NRT_PRIMITIVE_EXECUTION]
+① ARM_1 回正中（Home，关节速度 20%），ARM_2 Hold。Ctrl+C 可随时停 ……
+ARM_1 已回正。
+② ARM_1 受力回 0 中（ZeroFTSensor），不要碰 ARM_1 ……
+ARM_1 受力回 0 前：外力矩 tau_ext [-0.01 0.03 -0.07 0.00 0.01 -0.01 0.00] Nm，末端外力 tcp_wrench [-0.06 -0.03 0.12 -0.03 0.00 -0.02] N/Nm
+ARM_1 受力回 0 后：外力矩 tau_ext [0.00 0.00 0.00 -0.00 -0.00 -0.00 -0.00] Nm，末端外力 tcp_wrench [0.02 0.00 0.01 -0.00 0.00 0.00] N/Nm
+[2026-11-16 17:32:21.365] [info] [flexiv::rdk::Robot] Control mode switched to [RT_CARTESIAN_MOTION_FORCE]
+ARM_1：主动力控轴 X Y Z（WORLD 坐标系），线速度上限 [1.000 1.000 1.000] m/s；Rx Ry Rz 转动刚度 [0.0 0.0 0.0] Nm/rad（锁住用 K_x_nom [2000.0 2000.0 2000.0]）；肘部拉回权重 0.5
+ARM_2 hold 关节位置：[0.972 -0.095 0.213 1.486 -0.027 -1.407 6.116] rad；离关节极限最近的是 J7，还差 0.0801625 rad（范围 [-6.19592, 6.19592] rad）
+ARM_1 软停止：减速度上限 0.5 m/s²、1 rad/s²，T ≥ 0.3 s，速度大时 T、停止距离跟着变大（不设上限）；锁存后刚度 [15000.0 15000.0 15000.0 2000.0 2000.0 2000.0]（透明时实际 [0.0 0.0 0.0 0.0 0.0 0.0]），刚度渐增关
+③ 实时模式 RT_CARTESIAN_MOTION_FORCE 已开始：ARM_1 可以手拖；ARM_2 hold 不动。按 Ctrl+C 结束。
+发 Stop Sign：终端按 Enter，或另开终端 sudo kill -USR1 56567。ARM_1 减速到 0 后 HOLD，ARM_2 照旧 hold；不是急停，急停用 E-stop。
+Stop() 没有执行：[flexiv::rdk::Robot::SwitchMode] Robot is not operational: Minor fault occurred
+③ 期间 ARM_2 最大偏离 hold 位置：[0.0033 0.0002 0.0031 0.0006 0.0002 0.0004 0.0004] rad；最大速度：[0.004 0.001 0.004 0.002 0.002 0.002 0.002] rad/s
+ARM_1 软停止：收到 Stop Sign 0 次，最后状态 TRANSPARENT。实时周期间隔最长 1.05484 ms，超过 2 ms 的 0 次
+日志已写入 logs/soft_stop_B_20261116_173207.csv（4125 行，队列满丢了 0 行）
+已停止：机器人故障
+[2026-11-16 17:32:27.507] [error] [Event Log] [301005] Orientation error exceeds 90 degrees.
+[2026-11-16 17:32:27.517] [info] >>>>> Flexiv RDK exited <<<<<

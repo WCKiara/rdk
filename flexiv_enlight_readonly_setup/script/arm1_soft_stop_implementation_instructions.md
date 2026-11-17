@@ -3,7 +3,8 @@
 > **目标文件**：`arm1_transparent_arm2_hold_rt_cartesian.cpp`  
 > **目标平台**：Flexiv 双臂系统，按 RDK C++ **v2.1** API 设计（实施前先核实实际版本）  
 > **任务类型**：给工程师 / 编码 Agent 的分步实施指令，而不是未经验证可直接驱动真机的完整程序。  
-> **首要原则**：只改变 Arm1 的普通操作停止行为；Arm2 始终 Hold；不能绕过或延迟安全急停、保护停止、限位和碰撞保护。
+> **首要原则**：只改变 Arm1 的普通操作停止行为；Arm2 始终 Hold；不能绕过或延迟安全急停、保护停止、限位和碰撞保护。  
+> **实施状态（2026-11-16）**：第 1–8 步和 Test A 已完成，在分支 `feature/arm1-soft-stop`（df324b5）。现状说明、和本指令不一样的地方、测试记录见 [README_arm1_soft_stop.md](README_arm1_soft_stop.md)。Test B–E 要上真机，还没做。
 
 ---
 
@@ -73,17 +74,17 @@ grep -nE 'RT_CARTESIAN|StreamCartesian|SetCartesianImpedance|SetJointImpedance|S
   path/to/arm1_transparent_arm2_hold_rt_cartesian.cpp
 ```
 
-- [ ] 当前创建 `flexiv::rdk::Robot` 的位置、RDK 版本、构造参数及机械臂连接方式。
-- [ ] 当前是否确实进入 `Mode::RT_CARTESIAN_MOTION_FORCE`。
-- [ ] `ARM_1` 的透明控制是如何实现的：笛卡尔刚度是否为零/低值？是否开启力控轴？是否存在外部跟随算法？
-- [ ] `ARM_2` 原有 Hold 目标是固定采样一次，还是每次使用实测 pose（后者会造成漂移）。
-- [ ] 主 RT 循环的频率、计时方式、是否已经采用 realtime scheduler。
-- [ ] 所有对 `StreamCartesianMotionForce()` 的调用位置；确保只有**一个**负责双臂命令的实时发送路径。
-- [ ] `stop sign` 从哪里来（视觉程序/网络/键盘/数字 IO）；必须保留实际入口而不是擅自改成 `Ctrl+C`。
-- [ ] 是否存在 `break`、`return`、`robot.Stop()`、`SetMode(IDLE)` 或共同停止双臂的旧逻辑。
-- [ ] 是否已有日志与保护条件（超限、失联、异常、工作空间边界、最大力矩、外力等）。
+- [x] 当前创建 `flexiv::rdk::Robot` 的位置、RDK 版本、构造参数及机械臂连接方式。
+- [x] 当前是否确实进入 `Mode::RT_CARTESIAN_MOTION_FORCE`。
+- [x] `ARM_1` 的透明控制是如何实现的：笛卡尔刚度是否为零/低值？是否开启力控轴？是否存在外部跟随算法？
+- [x] `ARM_2` 原有 Hold 目标是固定采样一次，还是每次使用实测 pose（后者会造成漂移）。
+- [x] 主 RT 循环的频率、计时方式、是否已经采用 realtime scheduler。
+- [x] 所有对 `StreamCartesianMotionForce()` 的调用位置；确保只有**一个**负责双臂命令的实时发送路径。
+- [x] `stop sign` 从哪里来（视觉程序/网络/键盘/数字 IO）；必须保留实际入口而不是擅自改成 `Ctrl+C`。
+- [x] 是否存在 `break`、`return`、`robot.Stop()`、`SetMode(IDLE)` 或共同停止双臂的旧逻辑。
+- [x] 是否已有日志与保护条件（超限、失联、异常、工作空间边界、最大力矩、外力等）。
 
-**输出**：形成一段简短的现状说明，记录停止信号入口和 RT 发送入口的具体函数、行号。由于尚未提供源代码，本文件无法填写准确行号。
+**输出**：形成一段简短的现状说明，记录停止信号入口和 RT 发送入口的具体函数、行号。已完成，见 README_arm1_soft_stop.md 第 1 节（行号指改之前的版本）。
 
 ---
 
@@ -96,7 +97,7 @@ grep -nE 'RT_CARTESIAN|StreamCartesian|SetCartesianImpedance|SetJointImpedance|S
 | 实时笛卡尔发送 | `Robot::StreamCartesianMotionForce(std::map<JointGroup, RtCartesianCmd>)` | 仅 `RT_CARTESIAN_MOTION_FORCE`；连续约 1 kHz 发送 |
 | 读两臂状态 | `Robot::states()` | 按 `JointGroup::ARM_1` 与 `ARM_2` 获取 `RobotStates` |
 | 获取位姿 | `RobotStates::tcp_pose` | `[x,y,z,qw,qx,qy,qz]`（世界系） |
-| 获取速度 | `RobotStates::tcp_vel` | `[vx,vy,vz,wx,wy,wz]`（世界系） |
+| 获取速度 | `RobotStates::tcp_twist`（本机 v2.1 头文件里的名字，没有 `tcp_vel`） | `[vx,vy,vz,wx,wy,wz]`（世界系） |
 | 设置 Arm1 笛卡尔刚度 | `Robot::SetCartesianImpedance(JointGroup::ARM_1, K_x, Z_x)` | **阻塞**；只允许合法刚度范围；需要匹配控制模式 |
 | 关节阻抗模式专用 | `Robot::SetJointImpedance(JointGroup::ARM_1, K_q, Z_q)` | 只能用于 Joint Impedance 模式，**不能**在当前 Cartesian 模式直接使用 |
 
@@ -168,7 +169,7 @@ struct SoftStopContext {
 
 只执行一次：
 
-1. 读取 Arm1 当前**实测** `tcp_pose` 和 `tcp_vel`；检查数据时间戳、新鲜度、有限数值及单位。
+1. 读取 Arm1 当前**实测** `tcp_pose` 和 `tcp_twist`；检查数据时间戳、新鲜度、有限数值及单位。
 2. 对速度使用事先评估过的低延迟滤波；不要把长时间平均导致的延迟误差当作即时速度。
 3. 读取/检查当前发出的 Arm1 命令，验证与实测速度、位姿没有不可接受的跳变；否则不启动软件轨迹。
 4. 将当前实测平移位置记录为 `p0`，实测线速度记录为 `v0`；姿态记录为 `R0`，实测角速度记为 `omega0`。
@@ -235,6 +236,8 @@ T \ge \frac{\lVert v_0\rVert}{a_{max}}
 还需对**角速度/角加速度**、各轴关节速度、关节加速度、奇异位形、预测碰撞和二臂间距分别评估。任一限制无可行 `T` 时，**不得强行执行二次轨迹**，应交给已验证的保护停止路径。
 
 例如：当初始速度只有 `0.01 m/s` 且 `T=1 s`，平移理论制动距离约 `5 mm`；若速度为 `0.10 m/s`，同样的 `T` 会造成约 `50 mm` 的继续运动。因此 **不能假设 1 秒总是安全**。
+
+> **2026-11-15 按要求改动**：本节的停止距离、转角上限，以及“无可行 `T` 时交给保护停止”都去掉了。现在 `T = max(T_min, |v0|/a_max, |ω0|/α_max)`，速度大也照样软停止，停止距离 `|v0|²/(2 a_max)` 跟着变大。剩下的保护见 README_arm1_soft_stop.md 第 2 节第 6 条。
 
 ---
 
@@ -357,12 +360,12 @@ rt_cycle_us,stream_status,fault_status
 
 ### Test A：纯软件计算 / 离线单元测试（零真机运动）
 
-- [ ] 输入给定 `p0,v0,T`，检查 `t=0` 时 `p=p0`、`v=v0`；`t=T` 时 `p=p0+v0*T/2`、`v=0`。
-- [ ] 验证 `t>T` 后命令恒定 Hold。
-- [ ] 速度为零时不产生位移；正负速度均能正确停止。
-- [ ] Stop Sign 连续重复 100 次，状态只从 Transparent 跳转一次。
-- [ ] 模拟时间抖动、丢周期、异常速度和超限距离，验证无 `NaN`、越界和循环卡死。
-- [ ] Arm2 的参考指令在所有测试中逐字节/逐字段恒定（除时间戳等不相关字段）。
+- [x] 输入给定 `p0,v0,T`，检查 `t=0` 时 `p=p0`、`v=v0`；`t=T` 时 `p=p0+v0*T/2`、`v=0`。
+- [x] 验证 `t>T` 后命令恒定 Hold。
+- [x] 速度为零时不产生位移；正负速度均能正确停止。
+- [x] Stop Sign 连续重复 100 次，状态只从 Transparent 跳转一次。
+- [x] 模拟时间抖动、丢周期、异常速度和超限距离，验证无 `NaN`、越界和循环卡死。
+- [x] Arm2 的参考指令在所有测试中逐字节/逐字段恒定（除时间戳等不相关字段）。
 
 ### Test B：只读/无接触、低风险工况
 
@@ -470,4 +473,4 @@ SetCartesianImpedance 在 v2.1 为 blocking API，默认禁用在线渐增；
 - Flexiv RDK v2.x：常见问题、`Robot::states()`：  
   https://www.flexiv.com/software/rdk/manual/v2.x/faq.html
 
-**文档状态**：根据用户描述和官方 RDK v2.1 API 编写。由于尚未获得本地 `arm1_transparent_arm2_hold_rt_cartesian.cpp` 源文件，这是一份具体实施与验收规范，不是已经针对原始代码完成的修改。
+**文档状态**：根据用户描述和官方 RDK v2.1 API 编写。之后已按本指令修改 `arm1_transparent_arm2_hold_rt_cartesian.cpp`（分支 `feature/arm1-soft-stop`，df324b5）。2026-11-16 在实验室电脑上链接 RDK 2.1 编译通过（0 警告），Test A 通过（2841 项检查）。还没有上过真机，Test B–E 未做，所以不能说软停止已经在真机上验证过。

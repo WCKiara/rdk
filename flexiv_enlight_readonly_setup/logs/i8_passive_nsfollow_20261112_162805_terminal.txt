@@ -1,0 +1,24 @@
+[2026-11-12 16:28:12.286] [info] | | | | | | | | | |  Flexiv RDK v2.1  | | | | | | | | | |
+[2026-11-12 16:28:12.296] [info] [flexiv::rdk::Robot] Searching for [Enlight-LL-062034] ...
+[2026-11-12 16:28:12.344] [info] [flexiv::rdk::Robot] Connected to the robot
+[2026-11-12 16:28:12.497] [info] [flexiv::rdk::Robot] Validated license: RDK-Professional
+[2026-11-12 16:28:12.497] [info] [flexiv::rdk::Robot] Initialization complete
+[2026-11-12 16:28:12.518] [info] [flexiv::rdk::Robot] Control mode switched to [NRT_PRIMITIVE_EXECUTION]
+① ARM_1 回正中（Home，关节速度 20%），ARM_2 Hold。Ctrl+C 可随时停 ……
+ARM_1 已回正。
+② ARM_1 受力回 0 中（ZeroFTSensor），ARM_2 Hold。不要碰 ARM_1 ……
+ARM_1 受力回 0 前：外力矩 tau_ext [2.42 1.13 2.36 -2.65 1.92 -0.76 0.05] Nm，末端外力 tcp_wrench [11.78 6.05 6.02 0.61 3.29 -0.26] N/Nm
+ARM_1 受力回 0 后：外力矩 tau_ext [-0.01 -0.01 0.01 -0.01 -0.00 -0.00 -0.00] Nm，末端外力 tcp_wrench [0.08 -0.02 -0.01 0.01 0.02 0.00] N/Nm
+[2026-11-12 16:28:35.645] [info] [flexiv::rdk::Robot] Control mode switched to [RT_CARTESIAN_MOTION_FORCE]
+ARM_1：名义刚度 K_x_nom [15000.0 15000.0 15000.0 2000.0 2000.0 2000.0] N/m、Nm/rad；能拖的轴 X Y Z Rx Ry Rz：刚度比例 [0.000 0.000 0.000 0.000 0.000 0.000]，浮动时六轴刚度 [0.0 0.0 0.0 0.0 0.0 0.0]、阻尼比 [0.30 0.30 0.30 0.30 0.30 0.30]；其中能拖的 X Y Z 做被动零力控制（这几个轴的刚度、阻尼比不起作用），Rx Ry Rz 不做力控；锁定的轴 无：名义刚度、阻尼比 0.7、目标不跟随；肘部拉回权重 0.1，参考姿态每 10 ms 跟随实测关节位置
+注意：Rx Ry Rz 刚度为 0，阻尼也是 0，--zeta 对这些轴不起作用；要有阻尼先调大 --scale
+ARM_2 hold 关节位置：[1.033 -0.094 0.150 1.482 -0.023 -1.409 6.114] rad；离关节极限最近的是 J7，还差 0.0824118 rad（范围 [-6.19592, 6.19592] rad）
+③ 实时模式 RT_CARTESIAN_MOTION_FORCE 已开始：ARM_2 hold 不动；ARM_1 先用名义刚度保持，扶住 ARM_1 ……
+ARM_1 已浮动，能拖的轴 X Y Z Rx Ry Rz，锁定的轴 无：能拖的轴目标跟随实测值，松手停在原地；ARM_2 hold 不动。按 Ctrl+C 结束。
+[2026-11-12 16:29:50.079] [info] [flexiv::rdk::Robot] Control mode switched to [IDLE]
+已 Stop()：机器人进入 IDLE 并保持当前位置。
+③ 期间 ARM_2 最大偏离 hold 位置：[0.0019 0.0003 0.0017 0.0006 0.0003 0.0005 0.0005] rad；最大速度：[0.004 0.018 0.006 0.011 0.004 0.010 0.007] rad/s
+拖动 72.2159 秒期间主线程每 10 ms 查一次控制模式，6970 次都是 RT_CARTESIAN_MOTION_FORCE；③ 实时任务共发出 72320 次 StreamCartesianMotionForce（实时接口，1 kHz）
+肘部参考姿态跟随：SetNullSpacePosture 调用 6970 次，单次最长 12.725 ms
+日志已写入 logs/i8_passive_nsfollow_20261112_162805.csv
+[2026-11-12 16:29:50.087] [info] >>>>> Flexiv RDK exited <<<<<

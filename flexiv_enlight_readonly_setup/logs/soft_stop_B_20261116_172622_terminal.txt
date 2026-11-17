@@ -1,0 +1,12 @@
+[2026-11-16 17:26:24.445] [info] | | | | | | | | | |  Flexiv RDK v2.1  | | | | | | | | | |
+[2026-11-16 17:26:24.455] [info] [flexiv::rdk::Robot] Searching for [Enlight-LL-062034] ...
+[2026-11-16 17:26:24.503] [info] [flexiv::rdk::Robot] Connected to the robot
+[2026-11-16 17:26:24.656] [info] [flexiv::rdk::Robot] Validated license: RDK-Professional
+[2026-11-16 17:26:24.656] [info] [flexiv::rdk::Robot] Initialization complete
+机器人 Enlight-LL-062034，控制器软件版本 v4.1
+[2026-11-16 17:26:24.676] [info] [flexiv::rdk::Robot] Control mode switched to [NRT_PRIMITIVE_EXECUTION]
+① ARM_1 回正中（Home，关节速度 20%），ARM_2 Hold。Ctrl+C 可随时停 ……
+[2026-11-16 17:26:30.099] [info] [flexiv::rdk::Robot] Control mode switched to [IDLE]
+已 Stop()：机器人进入 IDLE 并保持当前位置。
+已停止：Home 期间被中断
+[2026-11-16 17:26:30.117] [info] >>>>> Flexiv RDK exited <<<<<

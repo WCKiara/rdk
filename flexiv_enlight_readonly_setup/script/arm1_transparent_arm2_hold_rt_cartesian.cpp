@@ -67,7 +67,7 @@ constexpr size_t kCartDoF = rdk::kCartDoF;  // 末端自由度，6。
 // 都是 RDK 的官方参数，也可以用同名命令行参数临时覆盖，不用重新编译。3 维的按末端 X Y Z 或 Rx Ry Rz 排列。
 // kPassiveForceControl：SetPassiveForceControl。false = 主动力控（RDK 默认）：闭环把末端测到的力压到 0，人推哪里臂就走哪里，
 //   会多一点笛卡尔阻尼，有 kMaxLinearVel 限速保护。true = 被动力控：只前馈 0 力，不加阻尼，更透明，
-//   但 kMaxLinearVel 不起作用，没人推时会自己漂，只剩 kArm1MaxJointVel 兜底。命令行 --passive。
+//   但 kMaxLinearVel 不起作用，没人推时会自己漂，没有限速。命令行 --passive。
 constexpr bool kPassiveForceControl = false;
 // kForceAxis：SetForceControlAxis 的 enabled_axes 的 X Y Z。1 = 这个轴力控，能拖；0 = 位置控制，锁在进入 ③ 时的位置。
 //   RDK 默认全 0（纯位置控制）。Rx Ry Rz 不能开力控：10-30 实测报错 "moment control is only available with 6DoF F/T
@@ -134,7 +134,8 @@ constexpr int kZeroEnableStaticCheck = 0;  // enableStaticCheck：清零前检�
 constexpr int kZeroCalibExtraPayload = 0;  // calibExtraPayload：标定时是否把额外负载算进工具负载，1 算。文档默认 0。
 
 // ========== 安全检查和流程：不发给机器人、不影响手感，只决定什么时候整机停 ==========
-constexpr double kArm1MaxJointVel = 1.0;  // 安全：ARM_1 任一关节超过它就整机停 [rad/s]。转动轴没有 kMaxLinearVel 那样的限速，靠它兜底。
+// ARM_1 不查速度（2026-11-16 按要求去掉了原来的关节速度 > 1 rad/s 停机）：转动轴没有限速，X Y Z 只有主动力控下的
+// kMaxLinearVel。剩下控制器自带的保护和 E-stop。
 // 安全：①②③ 全程 ARM_2 任一关节离开 hold 位置超过它就整机停 [rad]，0.01 rad ≈ 0.6°。结束时打印 ③ 期间 ARM_2 最大偏离和速度。
 constexpr double kArm2MaxPosError = 0.01;
 constexpr double kOperationalTimeout = 30.0;  // 流程：上伺服后等待就绪的最长时间 [s]。
@@ -142,7 +143,7 @@ constexpr double kHomeTimeout = 30.0;  // 流程：① 回正到位并停稳的�
 constexpr double kZeroTimeout = 10.0;  // 流程：② 受力回 0 结束的最长时间 [s]。
 constexpr auto kMonitorPeriod = std::chrono::milliseconds(10);  // 流程：主线程检查断线、E-stop、故障、控制模式的周期。
 constexpr double kLateCycleMs = 2.0;  // 统计：实时周期间隔超过它算一次迟到，结束时打印次数，不停机 [ms]。
-// 不做开始时的静止检查：没人推时慢慢漂（floating）不停机，只有超过 kArm1MaxJointVel 才停。
+// 不做开始时的静止检查：没人推时慢慢漂（floating）不停机。
 
 struct Params  // 命令行覆盖之后实际使用的参数。
 {
@@ -477,10 +478,6 @@ void PeriodicTask(rdk::Robot& robot, RtTargets& targets, Arm2Record& record)
             record.max_vel[i] = std::max(record.max_vel[i], std::abs(arm2.dtheta[i]));
         }
         CheckArm2(arm2_error);
-        if (const auto over = OverLimit(arm1.dtheta, kArm1MaxJointVel, 2); !over.empty()) {  // 电机侧速度，噪声小。
-            throw std::runtime_error("ARM_1 超过 kArm1MaxJointVel = " + Num(kArm1MaxJointVel) + " rad/s（" + over
-                                     + "）：没人推时是自己在漂，被动力控就换回主动力控；手拖太快就调大 kArm1MaxJointVel");
-        }
 
         // ARM_1：没有 Stop Sign 时发原来的透明指令；收到 Stop Sign 的周期锁存一次实测位姿和速度，之后按二次位置曲线
         // 减速，停稳后 HOLD；速度再大也照样执行。实测值无效、没停稳、跟踪误差太大时抛出，走原有的停机。

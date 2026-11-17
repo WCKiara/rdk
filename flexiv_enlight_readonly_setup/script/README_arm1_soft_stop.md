@@ -2,9 +2,9 @@
 
 按 [arm1_soft_stop_implementation_instructions.md](arm1_soft_stop_implementation_instructions.md) 修改 `arm1_transparent_arm2_hold_rt_cartesian.cpp`。
 
-改动在分支 `feature/arm1-soft-stop` 上，从 `tansparent` 的 6a09332 拉出，**还没有提交**。
+改动在 github.com/WCKiara/rdk 的分支 `feature/arm1-soft-stop` 上，从 `tansparent` 的 6a09332 拉出：89b1a9e 是软停止本身，eb52dbf 合并了 `tansparent` 的 36229e9（intermediate8 导纳控制），df324b5 更新文档。
 
-**状态：** 离线测试（Test A）已通过。主程序用 RDK 2.1 头文件做了编译检查，但没有链接 RDK 库，也没有在实验室电脑上编译、上过真机。Test B–E 都还没做。
+**状态：** 离线测试（Test A）已通过。2026-11-16 在实验室电脑上链接 RDK 2.1 编译通过（0 警告），Test A 在这台电脑上也通过。还没有上过真机，Test B–E 都还没做。
 
 | 文件 | 作用 |
 |---|---|
@@ -54,7 +54,7 @@
 
 6. **速度大也照样软停止（按 2026-11-15 的要求）。** 指令 5.3 节要求：停止距离、转角超限，或没有可行的 T 时，不执行二次轨迹、交给保护停止。这里按要求去掉了这些上限，T 只按减速度上限来定。
    - 速度大时，T 和停止距离跟着变大：停止距离 = |v0|²/(2 a_max)，0.5 m/s 时约 25 cm，1 m/s 时约 50 cm。
-   - 剩下的保护：跟踪误差 > 50 mm 停机、原有的 ARM_1 关节速度 > 1 rad/s 停机、控制器自带的保护、E-stop。
+   - 剩下的保护：跟踪误差 > 50 mm 停机、控制器自带的保护、E-stop。原有的 ARM_1 关节速度 > 1 rad/s 停机在 2026-11-16 按要求去掉了，ARM_1 不查速度。
    - 实测速度读数如果异常偏大，ARM_1 也会照着走更远。
 
 ## 3. 现在的行为
@@ -71,7 +71,7 @@ ARM_2:   HOLD ===============================> HOLD（每周期同一条指令�
 
 **实时任务每 1 ms：**
 
-1. 原有检查不变：故障、ARM_2 偏离、ARM_1 关节速度。
+1. 原有检查：故障、ARM_2 偏离。ARM_1 关节速度 > 1 rad/s 的停机 2026-11-16 按要求去掉了。
 2. 读 ARM_1 实测值：`tcp_pose`、`tcp_twist`（最近 5 个周期的平均）、`tcp_wrench`，以及 `timestamp` 有没有更新。
 3. 状态机算出 ARM_1 的指令：
    - TRANSPARENT：发原来的透明指令，逐字节相同。
@@ -219,7 +219,7 @@ sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --l
 ### Test E：回归
 
 - [ ] 不发 Stop Sign 时，手拖手感和改之前一样。
-- [ ] 原有停机照常有效：E-stop、ARM_1 关节速度超限、ARM_2 偏离、断线、模式被切走。
+- [ ] 原有停机照常有效：E-stop、ARM_2 偏离、断线、模式被切走。ARM_1 关节速度不再检查。
 - [ ] 速度大的时候发 Stop Sign 也照样软停止，不会整机停：T、停止距离按 |v0|²/(2 a_max) 变大，最后进入 HOLD。事先确认前方空间够。
 - [ ] HOLD 之后不会自己恢复透明。
 
@@ -263,6 +263,12 @@ sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --l
 | 2026-11-15 | 闭环模拟，大速度，开刚度渐增 | 同上，50 ms 一级 | 锁存后 1.43 s 进 HOLD，最大跟踪误差 2.97 mm，设刚度 25 次 |
 | 2026-11-15 | 主程序编译检查 | WSL g++ 11.4，`-std=gnu++20 -fsyntax-only -Wall -Wextra -Wpedantic -Wshadow`，RDK 2.1 头文件（Eigen 用替身） | 0 警告；改之前的版本同样 0 警告。**没有链接 RDK 库，没有在实验室电脑上编译** |
 | 2026-11-15 | `plot_soft_stop.py` | WSL python3、numpy 2.2、matplotlib 3.10，用模拟日志 | 6 张图正常，数字和模拟一致 |
+| 2026-11-16 | 编译，链接 RDK | 实验室电脑：Ubuntu 22.04、g++ 11.4、CMake 3.22，`.rdk-v2.1`，`-Wall -Wextra -Wpedantic -Wshadow` | 主程序和 `arm1_soft_stop_test` 0 警告。`.build/script` 里的程序和源码一致，是最新的 |
+| 2026-11-16 | Test A | 同上，`.build/script/arm1_soft_stop_test` | 2841 项检查全部通过，闭环模拟的数字和 11-15 相同 |
+| 2026-11-16 | 参数检查 | 同上，不连机器人、不用 sudo | `--stop-stiffness-scale 0`、`--stop-di 20`、`--stop-di 1.5`、`--log` 不带文件名，都在连机器人之前报错退出；不用 sudo 时提示要 root |
+| 2026-11-16 | `plot_soft_stop.py` | 同上，用模拟日志。项目 `.venv` 有 numpy 2.2.6，**没有 matplotlib**：`--no-plots` 用 `.venv` 跑，画图用临时 venv（matplotlib 3.10.9） | 数字和模拟一致，6 张图正常 |
+| 2026-11-16 17:26 | Test B 第一次 | 真机，默认参数（主动力控），`logs/soft_stop_B_20261116_172656.csv` | 没到按 Enter：③ 开始约 0.5 s 后 ARM_1 自己动起来，末端外力读数升到 12–15 N，线速度到 0.14 m/s，J7 1.3 s 内加速到 1 rad/s，触发原有的 ARM_1 关节速度停机，整机 Stop()。ARM_2 最大偏离 0.003 rad，实时周期最长 1.10 ms、0 次迟到。之后按要求去掉了 ARM_1 关节速度停机 |
+| 2026-11-16 17:32 | Test B 第二次 | 同上，已去掉 ARM_1 关节速度停机，`logs/soft_stop_B_20261116_173207.csv` | 又没到按 Enter（Stop Sign 0 次）。第一个实时周期后 0.50 s 腕部 J5 先动（两次都一样，外力读数在动了之后才升），随后发散：末端走了 22 cm，角速度到 9.5 rad/s，J5、J7 到 4.5–4.8 rad/s，最后控制器报 [301005] Orientation error exceeds 90 degrees，机器人故障，Stop() 没执行。ARM_2 最大偏离 0.003 rad。**结论：默认透明配置（X Y Z 主动力控、Rx Ry Rz 刚度 0、阻尼 0、目标位姿固定）没人碰也不稳定，Test B 测不到软停止** |
 | — | Test B–E | 真机 | 未做 |
 
 记录真机测试时请写上：
@@ -282,7 +288,7 @@ sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --l
 - 第 2 节第 2 条：实时流运行期间由主线程调用阻塞接口，还没有厂家书面确认。刚度渐增也一样。
 - 按要求不设停止距离上限：速度大时 ARM_1 会走很远（1 m/s 约 50 cm）。前方空间够不够，只能靠操作者确认和 E-stop。
 - T 只按末端线速度、角速度和减速度上限来定，下面这些都没有评估：
-  - 各关节速度、加速度（只有原有的 1 rad/s 关节速度停机检查）
+  - 各关节速度、加速度（原有的 1 rad/s 关节速度停机 2026-11-16 按要求去掉了，现在完全不查）
   - 奇异位形
   - 碰撞预测
   - 两臂间距
@@ -303,3 +309,12 @@ git restore --source=tansparent -- flexiv_enlight_readonly_setup/script/arm1_tra
 ```
 
 在 `rdk` 目录运行。或者直接 `git switch tansparent`，但要先处理掉未提交的改动。
+
+实验室电脑上的 `rdk/.git` 是空目录，上面的 git 命令用不了。改用 GitHub 上 `tansparent` 的文件，它和 6a09332 的一样（2026-11-16 核对过）。先把软停止版另存一份：
+
+```bash
+cd ~/rdk/flexiv_enlight_readonly_setup
+cp script/arm1_transparent_arm2_hold_rt_cartesian.cpp script/arm1_transparent_arm2_hold_rt_cartesian.cpp.soft_stop
+gh api -H 'Accept: application/vnd.github.raw' 'repos/WCKiara/rdk/contents/flexiv_enlight_readonly_setup/script/arm1_transparent_arm2_hold_rt_cartesian.cpp?ref=tansparent' > script/arm1_transparent_arm2_hold_rt_cartesian.cpp
+cmake --build .build/script
+```

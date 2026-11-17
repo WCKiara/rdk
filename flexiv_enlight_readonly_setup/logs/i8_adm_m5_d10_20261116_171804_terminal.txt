@@ -1,0 +1,23 @@
+[2026-11-16 17:18:06.618] [info] | | | | | | | | | |  Flexiv RDK v2.1  | | | | | | | | | |
+[2026-11-16 17:18:06.628] [info] [flexiv::rdk::Robot] Searching for [Enlight-LL-062034] ...
+[2026-11-16 17:18:06.677] [info] [flexiv::rdk::Robot] Connected to the robot
+[2026-11-16 17:18:06.829] [info] [flexiv::rdk::Robot] Validated license: RDK-Professional
+[2026-11-16 17:18:06.829] [info] [flexiv::rdk::Robot] Initialization complete
+[2026-11-16 17:18:06.850] [info] [flexiv::rdk::Robot] Control mode switched to [NRT_PRIMITIVE_EXECUTION]
+① ARM_1 回正中（Home，关节速度 20%），ARM_2 Hold。Ctrl+C 可随时停 ……
+ARM_1 已回正。
+② ARM_1 受力回 0 中（ZeroFTSensor），ARM_2 Hold。不要碰 ARM_1 ……
+ARM_1 受力回 0 前：外力矩 tau_ext [-0.01 0.01 -0.02 0.05 0.01 0.01 -0.00] Nm，末端外力 tcp_wrench [-0.28 -0.02 -0.02 0.00 -0.07 -0.00] N/Nm
+ARM_1 受力回 0 后：外力矩 tau_ext [0.01 0.01 -0.01 -0.00 -0.00 0.00 -0.00] Nm，末端外力 tcp_wrench [-0.01 0.00 0.01 -0.01 -0.00 -0.00] N/Nm
+[2026-11-16 17:18:17.949] [info] [flexiv::rdk::Robot] Control mode switched to [RT_CARTESIAN_MOTION_FORCE]
+ARM_1：名义刚度 K_x_nom [15000.0 15000.0 15000.0 2000.0 2000.0 2000.0] N/m、Nm/rad，阻尼比 0.7，全程不变；能拖的轴 X Y Z Rx Ry Rz：导纳 M [5.000 5.000 5.000 5.000 5.000 5.000] kg、kg·m²，D [10.00 10.00 10.00 10.00 10.00 10.00] N·s/m、N·m·s/rad，时间常数 M/D [0.500 0.500 0.500 0.500 0.500 0.500] s，死区 0.5 N、0.05 N·m；锁定的轴 无：目标不动；跟不上导纳目标 10 mm、0.03 rad 就停机；肘部拉回权重 0.1，参考姿态 = 进入 ③ 时的姿态
+ARM_2 hold 关节位置：[0.983 -0.095 0.202 1.485 -0.027 -1.408 6.116] rad；离关节极限最近的是 J7，还差 0.0797977 rad（范围 [-6.19592, 6.19592] rad）
+③ 实时模式 RT_CARTESIAN_MOTION_FORCE 已开始：ARM_2 hold 不动；ARM_1 先锁在当前位姿 ……
+ARM_1 导纳控制已开始，能拖的轴 X Y Z Rx Ry Rz，锁定的轴 无：推它就走，松手后减速停下、不弹回；ARM_2 hold 不动。按 Ctrl+C 结束。
+[2026-11-16 17:18:31.519] [info] [flexiv::rdk::Robot] Control mode switched to [IDLE]
+已 Stop()：机器人进入 IDLE 并保持当前位置。
+③ 期间 ARM_2 最大偏离 hold 位置：[0.0025 0.0001 0.0023 0.0005 0.0002 0.0004 0.0004] rad；最大速度：[0.004 0.001 0.004 0.002 0.002 0.002 0.008] rad/s
+导纳期间 ARM_1 最大跟踪误差：位置 0.00764524 mm、姿态 3.0857e-05 rad（停机上限 10 mm、0.03 rad）
+拖动 11.424 秒期间主线程每 10 ms 查一次控制模式，1130 次都是 RT_CARTESIAN_MOTION_FORCE；③ 实时任务共发出 11528 次 StreamCartesianMotionForce（实时接口，1 kHz）
+日志已写入 logs/i8_adm_m5_d10_20261116_171804.csv
+[2026-11-16 17:18:31.530] [info] >>>>> Flexiv RDK exited <<<<<

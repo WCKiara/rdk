@@ -1,0 +1,2 @@
+日志文件 logs/i8_passive_.csv 已经存在，为了不覆盖以前的记录，程序不运行。
+换个文件名，例如带日期时间：--log=logs/i8_ns010_$(date +%Y%m%d_%H%M%S).csv
