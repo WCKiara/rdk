@@ -135,6 +135,7 @@ ARM_1 用导纳控制手拖，ARM_2 全程不动。流程和上面两个程序�
 这个程序不设速度、位置限位类的停机检查：拖得多快、多远都不会被程序停下，ARM_2 偏离 hold 位置也不停机（结束时照样打印偏离）。
 
 - 只有一个例外：ARM_1 跟不上导纳目标超过 10 mm 或 0.03 rad（被挡住、到关节极限、被控制器限速）时整机停。结束时打印导纳期间的最大跟踪误差。
+- 转动有限速、不停机：ARM_1 目标角速度最快 0.5 rad/s（`--max-angular-speed`），手再用力也转不快，结束时打印被限了多少 ms。平移不限速。
 - 除此之外只有 E-stop 和控制器自带的保护能停住机器人，拖动时手放在 E-stop 旁边。
 - 拖动期间全程是实时模式 `RT_CARTESIAN_MOTION_FORCE`，结束时会打印一行控制模式检查结果确认这一点。
 
@@ -144,7 +145,7 @@ ARM_1 用导纳控制手拖，ARM_2 全程不动。流程和上面两个程序�
 sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034
 ```
 
-觉得抖或者太飘，就把质量、阻尼调大一些。1 个数只改平移 X Y Z，转动保持默认的 0.15、0.3，扭末端时 J7 照样转得动，例如：
+觉得抖或者太飘，就把质量、阻尼调大一些。1 个数只改平移 X Y Z，转动保持默认的 0.15、0.1，扭末端时 J7 照样转得动，例如：
 
 ```bash
 sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --mass=8 --damping=15
@@ -153,7 +154,8 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 | 选项 | 作用 |
 |---|---|
 | `--mass=M` | 虚拟质量，必须 > 0。X Y Z 单位 kg，Rx Ry Rz 单位 kg·m²，默认 5,5,5,0.15,0.15,0.15。越小起动、变向越轻，太小会抖。1 个数 = 只改 X Y Z，Rx Ry Rz 保持默认；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个，例如 `--mass=5,5,5,0.3,0.3,0.3` |
-| `--damping=D` | 虚拟阻尼，必须 > 0。X Y Z 单位 N·s/m，Rx Ry Rz 单位 N·m·s/rad，默认 10,10,10,0.3,0.3,0.3。越小越轻、越快，松手后也滑得越远。1 个数（只改 X Y Z）或 6 个数，同 `--mass` |
+| `--damping=D` | 虚拟阻尼，必须 > 0。X Y Z 单位 N·s/m，Rx Ry Rz 单位 N·m·s/rad，默认 5,5,5,0.1,0.1,0.1。越小越轻、越快，松手后也滑得越远。1 个数（只改 X Y Z）或 6 个数，同 `--mass` |
+| `--max-angular-speed=W` | ARM_1 目标角速度 \|ω\| 的上限 [rad/s]，必须 > 0，默认 0.5。导纳算出来超过它就按比例缩到它、方向不变：手再用力也转不快，松手后从这个速度开始减速。只限速、不停机，平移不受影响。工具朝下时扭末端主要是 J7 在转 |
 | `--nullspace=W` | 肘部被拉回起始姿态的权重，范围 0.1–1，默认 0.1 |
 | `--nullspace-follow` | 肘部参考姿态每 10 ms 跟随实测关节位置，肘部不再被拉回进入 ③ 时的姿态（J1 J2 J3 一起转、末端不动的那种动作变轻）。没人推时肘部可能自己漂 |
 | `--log=FILE.csv` | 导纳期间 100 Hz 记录 ARM_1 的末端位姿、速度、外力和关节状态。文件已经存在时程序不运行，不会覆盖旧记录 |
@@ -174,7 +176,7 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 4. Ctrl+C 结束。
 
 ```bash
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --log=logs/i8_adm_m5_d10_r015_03_$(date +%Y%m%d_%H%M%S).csv
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --log=logs/i8_adm_m5_d5_r015_01_w05_$(date +%Y%m%d_%H%M%S).csv
 ```
 
 ```bash
@@ -184,7 +186,7 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 跑完之后，把几份日志放在一起比（不需要 sudo，不连机器人）：
 
 ```bash
-.venv/bin/python script/compare_transparency.py logs/i8_adm_m5_d10_r015_03_2026*.csv logs/i8_adm_m8_d15_2026*.csv
+.venv/bin/python script/compare_transparency.py logs/i8_adm_m5_d5_r015_01_w05_2026*.csv logs/i8_adm_m8_d15_2026*.csv
 ```
 
 `2026*` 会匹配所有带日期的同名日志。只想比某一次，就写完整文件名，程序结束时会打印"日志已写入 …"。
