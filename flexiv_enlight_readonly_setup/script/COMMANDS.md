@@ -53,6 +53,8 @@ sudo .build/script/arm1_transparent_arm2_hold_rt Enlight-LL-062034
 sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034
 ```
 
+**注意：** 11-16 真机用默认参数进入 ③ 的 4 次（`logs/soft_stop_B_*`），都是没人碰 ARM_1，③ 开始后 0.6–6 秒它就自己转起来，越转越快。程序现在不查 ARM_1 速度，一直转到姿态离目标 90° 时机器人故障停机（301005 Orientation error exceeds 90 degrees），之后要先清除故障（见最后的"清除故障"，或者下次运行加 `--clear-fault`）。运行时手一直放在 E-stop 上。记录见 [README_arm1_soft_stop.md](README_arm1_soft_stop.md) 第 8 节。
+
 | 选项 | 作用 |
 |---|---|
 | `--passive` | 被动力控：更透明，但没人推时会自己漂。不加这个选项就是主动力控 |
@@ -93,7 +95,7 @@ sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --p
 sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian Enlight-LL-062034 --log logs/soft_stop_$(date +%Y%m%d_%H%M%S).csv
 ```
 
-画图前先装一次 matplotlib（`.venv/bin/pip install matplotlib`），然后把文件名换成实际的：
+画图前先装一次 matplotlib（`.venv/bin/pip install matplotlib`），然后把文件名换成实际的。不装 matplotlib、只看数字就加 `--no-plots`：
 
 ```bash
 .venv/bin/python script/plot_soft_stop.py logs/soft_stop_20261115_120000.csv
@@ -119,7 +121,10 @@ cmake --build .build/script --target arm1_soft_stop_test && .build/script/arm1_s
 
 ### 停下来之后
 
-输出最后一行如果是"已停止：……"，后面写的就是停机原因。没有这一行，说明是 Ctrl+C 正常结束的。
+程序打印的最后一行如果是"已停止：……"，后面写的就是停机原因。它后面可能还有 RDK 自己打印的几行（带 `[info]`、`[error]`），不用管。
+
+- 停机原因是"机器人故障"时，看 RDK 打印的 `[error] [Event Log] [故障码] …` 那一行，例如 `[301005] Orientation error exceeds 90 degrees.`。这时通常还有一行"Stop() 没有执行：…"，要先按下面的"清除故障"清掉才能再运行。
+- 没有"已停止"这一行，说明是 Ctrl+C 正常结束的。
 
 ## 运行 RT 笛卡尔导纳控制（intermediate8）
 
@@ -145,6 +150,12 @@ ARM_1 用导纳控制手拖，ARM_2 全程不动。流程和上面两个程序�
 sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034
 ```
 
+现在的默认值（阻尼 5,5,5,0.1,0.1,0.1，目标角速度上限 0.5 rad/s）还没上机试过。11-16 真机跑了 5 次的是阻尼 10,10,10,0.3,0.3,0.3（质量和现在一样，那时还没有角速度上限）。一开始摆，就先回到这组：
+
+```bash
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --damping=10,10,10,0.3,0.3,0.3
+```
+
 觉得抖或者太飘，就把质量、阻尼调大一些。1 个数只改平移 X Y Z，转动保持默认的 0.15、0.1，扭末端时 J7 照样转得动，例如：
 
 ```bash
@@ -164,7 +175,7 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 
 以前的 `--scale`、`--zeta`、`--passive`、`--active` 都去掉了：导纳不降刚度，也不用力控。以前的降刚度浮动版本保留为 `intermediate8_realtime_cartesian_floating_original.cpp`，不编译。
 
-要长期改默认值，改源码里"导纳参数：在这里调"那一段：`kAdmittanceMass`、`kAdmittanceDamping`、`kForceDeadband`、`kMomentDeadband`、`kNullSpaceRefTracking`、`kNullSpaceFollow`、`kLockX` … `kLockRz`。其中死区和锁定没有命令行参数。停下来之后怎么看原因，同上面的"停下来之后"。详细说明见 [README_cartesian_floating.md](README_cartesian_floating.md)。
+要长期改默认值，改源码里"导纳参数：在这里调"那一段：`kAdmittanceMass`、`kAdmittanceDamping`、`kMaxAngularSpeed`、`kForceDeadband`、`kMomentDeadband`、`kNullSpaceRefTracking`、`kNullSpaceFollow`、`kLockX` … `kLockRz`。其中死区和锁定没有命令行参数。停下来之后怎么看原因，同上面的"停下来之后"。详细说明见 [README_cartesian_floating.md](README_cartesian_floating.md)。
 
 ### 量化对比透明度
 
@@ -175,27 +186,35 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 3. 如果转动轴放开了，再慢慢转几下工具。
 4. Ctrl+C 结束。
 
+文件名里的 `m5_d5` 是平移质量 5、阻尼 5，`r015_01` 是转动质量 0.15、阻尼 0.1，`w05` 是角速度上限 0.5。1 个数的 `--mass`、`--damping` 只改平移，所以第二条的转动部分还是 `r015_01_w05`：
+
 ```bash
 sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --log=logs/i8_adm_m5_d5_r015_01_w05_$(date +%Y%m%d_%H%M%S).csv
 ```
 
 ```bash
-sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --mass=8 --damping=15 --log=logs/i8_adm_m8_d15_$(date +%Y%m%d_%H%M%S).csv
+sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 --mass=8 --damping=15 --log=logs/i8_adm_m8_d15_r015_01_w05_$(date +%Y%m%d_%H%M%S).csv
 ```
 
 跑完之后，把几份日志放在一起比（不需要 sudo，不连机器人）：
 
 ```bash
-.venv/bin/python script/compare_transparency.py logs/i8_adm_m5_d5_r015_01_w05_2026*.csv logs/i8_adm_m8_d15_2026*.csv
+.venv/bin/python script/compare_transparency.py logs/i8_adm_m5_d5_r015_01_w05_2026*.csv logs/i8_adm_m8_d15_r015_01_w05_2026*.csv
 ```
 
 `2026*` 会匹配所有带日期的同名日志。只想比某一次，就写完整文件名，程序结束时会打印"日志已写入 …"。
+
+没进入导纳就停了的那次（例如 ①② 期间 Ctrl+C），日志是 0 字节的空文件，`2026*` 也会把它匹配进来，`compare_transparency.py` 读到空文件就报错退出。11-16 的 `logs/i8_adm_m5_d10_r015_03_20261116_180734.csv` 就是这样。比之前先找出空文件，删掉，或者写完整文件名跳过它：
+
+```bash
+find logs -name '*.csv' -empty
+```
 
 最后的对比表里：
 
 - 平移阻尼、转动阻尼、平移阻力、起动力越小越透明；松手最大漂移越小越稳。
 - 导纳下拟合出的阻尼应该接近 `--damping`，惯量项接近 `--mass`，常数接近力死区 0.5 N。差得多，说明 ARM_1 没跟上导纳目标，或者外力估算有偏差。
-- 以前降刚度浮动的日志（`logs/i8_ns010*`、`logs/i8_passive*` 等）也可以一起比。
+- 以前降刚度浮动的日志也可以一起比，例如 `logs/i8_ns010*.csv`、`logs/i8_passive_2026*.csv`。要写上 `.csv`，不然会匹配到 `*_terminal.txt`；也不要写 `logs/i8_passive*.csv`，它会匹配到空文件 `i8_passive_.csv`。
 - 松手漂移只看日志开头 2 秒，要换成别的秒数就加 `--hands-off=3`。
 
 ## 清除故障
@@ -206,7 +225,13 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 
 这个程序不需要 `sudo`，也不会让机器人动。清除之前先松开 E-stop，并排除造成故障的原因。严重故障可能要等最多 30 秒，有的必须重启机器人电源才能清掉。
 
-要重新编译这个官方例子：
+还没有 `.build/rdk-v2.1-examples` 时（例如换了电脑），先配置再编译这个官方例子：
+
+```bash
+cmake -S third_party/flexiv_rdk/example -B .build/rdk-v2.1-examples -Dflexiv_rdk_DIR="$PWD/.rdk-v2.1/lib/cmake/flexiv_rdk" && cmake --build .build/rdk-v2.1-examples --target basics2_clear_fault
+```
+
+已经配置过，只要重新编译：
 
 ```bash
 cmake --build .build/rdk-v2.1-examples --target basics2_clear_fault

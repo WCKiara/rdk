@@ -30,18 +30,20 @@
 //   ARM_1：6 轴纯位置控制，刚度一直是名义刚度 K_x_nom、阻尼比 0.7（RDK 默认），不降刚度、不开力控，不自己解 IK。
 //          先把目标锁在进入 ③ 时的末端位姿，成功发满 kWarmupCycles 次，确认实时指令一直在发，然后开始导纳：
 //          每 1 ms 读末端外力 F = tcp_wrench（世界坐标系，手加在 TCP 上的力和力矩，本机由关节力矩估算），
-//          能拖的轴按 M·dv/dt + D·v = F 算出目标速度 v，积分出目标位姿，和目标速度 twist_d 一起发出去，
-//          由名义刚度的位置控制跟踪。手感只由 M（kAdmittanceMass）、D（kAdmittanceDamping）决定，和机器人本身的
-//          刚度、阻尼无关。锁定的轴目标速度 0、目标位姿保持进入 ③ 时的值，名义刚度锁住。
+//          能拖的轴按 M·dv/dt + D·v = F 算出目标速度 v，目标角速度 |ω| 不超过 kMaxAngularSpeed，积分出目标位姿，
+//          和目标速度 twist_d 一起发出去，由名义刚度的位置控制跟踪。手感由 M（kAdmittanceMass）、
+//          D（kAdmittanceDamping）决定，再加上死区和角速度上限，和机器人本身的刚度、阻尼无关。
+//          锁定的轴目标速度 0、目标位姿保持进入 ③ 时的值，名义刚度锁住。
 //   ARM_1: pure 6-axis motion control at nominal stiffness K_x_nom and damping ratio 0.7 (RDK default) throughout;
 //          no stiffness reduction, no force control, no IK of our own. The target is first held at the TCP pose on
 //          entering ③ until kWarmupCycles commands have gone out, confirming RT streaming works; then admittance
 //          starts: every 1 ms read the TCP wrench F = tcp_wrench (world frame; force and moment the hand applies at
 //          the TCP, estimated from joint torques on this robot), get each draggable axis's target velocity v from
-//          M·dv/dt + D·v = F, integrate it into the target pose, and send both (pose_d, twist_d) to the
-//          nominal-stiffness motion controller. The feel is set only by M (kAdmittanceMass) and D
-//          (kAdmittanceDamping), not by the robot's own stiffness or damping. Locked axes keep zero target velocity
-//          and the entry pose, held at nominal stiffness.
+//          M·dv/dt + D·v = F with the target angular speed |ω| capped at kMaxAngularSpeed, integrate it into the
+//          target pose, and send both (pose_d, twist_d) to the nominal-stiffness motion controller. The feel is set
+//          by M (kAdmittanceMass) and D (kAdmittanceDamping), plus the deadband and the angular speed cap, not by
+//          the robot's own stiffness or damping. Locked axes keep zero target velocity and the entry pose, held at
+//          nominal stiffness.
 //          和改之前的降刚度浮动不同：那时目标跟随实测位姿、刚度降到 0，手直接推机器人，tcp_wrench 只记录不用；
 //          现在 tcp_wrench 是控制输入，机器人本身一直是硬的位置控制。
 //          Unlike the earlier reduced-stiffness floating, where the target followed the measured pose at zero
@@ -115,17 +117,22 @@ constexpr double kRtPeriod = 0.001;
 // The price of transparency: the hand does all the starting and braking, and the arm coasts after release; raise
 // --mass / --damping if it shakes or drifts too much.
 // 11-16 真机：上面那组（平移 3 kg、5 N·s/m，转动 0.05 kg·m²、0.1 N·m·s/rad，logs/i8_adm_m3_d5_20261116_174025.csv）
-//   手一碰 1.2 s 内就失控：约 2 Hz 越摆越大，外力到 16 N、末端 0.34 m/s、J4 ±0.8 rad/s、J7 1.37 rad/s；平移 5 kg、
-//   10 N·s/m 的 3 次都稳。所以默认平移改成 5、10，转动（扭末端主要靠 J7）改成原来的 3 倍 0.15、0.3，时间常数都是 0.5 s。
+//   手一碰 1.2 s 内就失控：约 2 Hz 越摆越大，外力到 21 N、末端 0.38 m/s、J4 ±0.86 rad/s、J7 1.37 rad/s。在它之前
+//   --mass=5 --damping=10 的 3 次（logs/i8_adm_m5_d10_2026*）都稳，但当时 1 个数用到 6 个轴，转动也是 5、10，
+//   其中 1 次没拖。所以默认平移改成 5、10，转动（扭末端主要靠 J7）改成原来的 3 倍 0.15、0.3，时间常数都是 0.5 s；
+//   这组跑了 5 次，日志 logs/i8_adm_m5_d10_r015_03_*。
 // On the robot on 11-16 the set above (3 kg, 5 N·s/m translational; 0.05 kg·m², 0.1 N·m·s/rad rotational;
 //   logs/i8_adm_m3_d5_20261116_174025.csv) ran away within 1.2 s of a touch: a growing ~2 Hz oscillation, wrench up to
-//   16 N, TCP 0.34 m/s, J4 ±0.8 rad/s, J7 1.37 rad/s. The three runs at 5 kg, 10 N·s/m were stable. So the defaults are
-//   now 5, 10 translational and 3× the old rotational values, 0.15, 0.3 (twisting the TCP mostly turns J7); both
-//   time constants are 0.5 s.
-// 之后按要求阻尼改回 5、0.1（质量保持 5、0.15），另加 kMaxAngularSpeed 限制目标角速度，不让转动失控。5 kg、5 N·s/m
-//   这组平移还没上机试过。
-// Then, as asked, the damping went back to 5, 0.1 (mass kept at 5, 0.15) and kMaxAngularSpeed was added to cap the
-//   target angular speed so rotation cannot run away. This 5 kg, 5 N·s/m translational set is untested on the robot.
+//   21 N, TCP 0.38 m/s, J4 ±0.86 rad/s, J7 1.37 rad/s. The three earlier runs with --mass=5 --damping=10
+//   (logs/i8_adm_m5_d10_2026*) were stable, but one number then set all 6 axes, so rotation was 5, 10 as well, and
+//   one of the runs was not dragged. So the defaults became 5, 10 translational and 3× the old rotational values,
+//   0.15, 0.3 (twisting the TCP mostly turns J7), both time constants 0.5 s; that set ran 5 times, logged as
+//   logs/i8_adm_m5_d10_r015_03_*.
+// 之后按要求阻尼改回 5、0.1（质量保持 5、0.15，M/D 平移 1 s、转动 1.5 s），另加 kMaxAngularSpeed，目标角速度最快
+//   0.5 rad/s。现在这组（平移 5 kg、5 N·s/m，转动 0.15 kg·m²、0.1 N·m·s/rad）还没上机试过。
+// Then, as asked, the damping went back to 5, 0.1 (mass kept at 5, 0.15; M/D 1 s translational, 1.5 s rotational)
+//   and kMaxAngularSpeed caps the target angular speed at 0.5 rad/s. This set (5 kg, 5 N·s/m translational;
+//   0.15 kg·m², 0.1 N·m·s/rad rotational) has not run on the robot yet.
 //
 // kAdmittanceMass：虚拟质量 M，X Y Z 是质量 [kg]，Rx Ry Rz 是转动惯量 [kg·m²]。越小起动、变向越轻；太小容易抖
 //   （tcp_wrench 是估算值，有噪声和滤波滞后），抖了就调大。浮动日志里平移惯量项 2.6–9.8 kg、转动 0.04–0.44 kg·m²。
@@ -146,19 +153,22 @@ constexpr std::array<double, rdk::kCartDoF> kAdmittanceMass = {5.0, 5.0, 5.0, 0.
 //   damping (0.14, 0.10 N·m·s/rad), the rest negative (no rotational damping, the hand had to brake). Must be > 0.
 //   Command line: --damping=D (X Y Z only) or --damping=D1,D2,D3,D4,D5,D6.
 // 1 个数只改 X Y Z：转动的单位不同，平移的数用到转动上会重 100 倍。11-16 用 --mass=5 --damping=10 时 6 个轴都是 5、10，
-//   转动阻尼是默认的 100 倍，扭末端时 J7 几乎不转（23 秒只转了 7–12°，最快 0.15 rad/s）。
+//   转动阻尼是默认的 100 倍，末端几乎扭不动（拖了 23 秒，末端姿态最多转了 7–12°，角速度最快 0.15 rad/s）。
 // One number sets X Y Z only: the rotation units differ, and a translational value is 100× too heavy for rotation. On
-//   11-16, --mass=5 --damping=10 put 5 and 10 on all 6 axes, 100× the default rotational damping, and twisting the
-//   TCP barely turned J7 (7–12° in 23 s, at most 0.15 rad/s).
+//   11-16, --mass=5 --damping=10 put 5 and 10 on all 6 axes, 100× the default rotational damping, and the TCP barely
+//   twisted (in 23 s of dragging its orientation changed by at most 7–12°, at most 0.15 rad/s).
 constexpr std::array<double, rdk::kCartDoF> kAdmittanceDamping = {5.0, 5.0, 5.0, 0.1, 0.1, 0.1};
 // kMaxAngularSpeed：ARM_1 目标角速度 |ω|（世界坐标系，Rx Ry Rz 合起来）的上限 [rad/s]。导纳算出的 ω 超过它就按比例缩到
 //   这个值，方向不变：手再用力也转不快，松手后从这个速度开始减速。只限速、不停机，平移不受影响。工具朝下时扭末端主要是
-//   J7 在转。11-16 的导纳日志里转动最快 0.34–0.63 rad/s。必须 > 0。命令行 --max-angular-speed=W。
+//   J7 在转。默认转动阻尼 0.1 N·m·s/rad、死区 0.05 N·m 时，一直扭 0.1 N·m 就到上限。11-16 转动 0.15、0.3 的 5 次
+//   导纳日志（logs/i8_adm_m5_d10_r015_03_*）里末端角速度最快 0.34–0.67 rad/s。必须 > 0。命令行 --max-angular-speed=W。
 // kMaxAngularSpeed: cap on ARM_1's target angular speed |ω| (world frame, Rx Ry Rz combined) [rad/s]. A larger ω from
 //   the admittance model is scaled down to it, keeping the direction: pushing harder does not turn faster, and after
 //   release it slows down from this speed. It only limits speed, never stops, and leaves translation alone. With the
-//   tool pointing down, twisting the TCP mostly turns J7. The 11-16 admittance logs peak at 0.34–0.63 rad/s.
-//   Must be > 0. Command line: --max-angular-speed=W.
+//   tool pointing down, twisting the TCP mostly turns J7. With the default rotational damping 0.1 N·m·s/rad and the
+//   0.05 N·m deadband, a steady 0.1 N·m twist already reaches the cap. The 5 admittance logs of 11-16 with rotation
+//   at 0.15, 0.3 (logs/i8_adm_m5_d10_r015_03_*) peak at 0.34–0.67 rad/s. Must be > 0.
+//   Command line: --max-angular-speed=W.
 constexpr double kMaxAngularSpeed = 0.5;
 // kForceDeadband、kMomentDeadband：F 的死区，力 [N]、力矩 [N·m]。能拖的轴上的力（力矩）合起来不到这个值就当作 0，超过的
 //   部分才进导纳模型，过死区时不跳。死区就是起动要用的最小力：越小越透明，但 tcp_wrench 零点误差超出死区的部分会让末端
@@ -253,10 +263,10 @@ constexpr int kZeroCalibExtraPayload = 0;  // calibExtraPayload：额外负载�
 // ========== 停机条件和流程：不发给机器人、不影响手感，只决定什么时候整机停 ==========
 // ========== Stop conditions and sequencing: not sent to the robot, no effect on feel; they only decide when to stop ==========
 // 11-03 按要求不设速度、位置限位类的停机检查：ARM_1 末端速度、离起点的位移、关节离极限的余量、关节速度，
-// ARM_2 偏离 hold 位置，都不检查（ARM_2 的偏离仍然记录，结束时打印）。
+// ARM_2 偏离 hold 位置，都不检查（ARM_2 的偏离仍然记录，结束时打印）。kMaxAngularSpeed 只限目标角速度，不停机。
 // As requested on 11-03 there are no speed- or position-limit stop checks: ARM_1 TCP speed, displacement from the start,
 // joint-limit margin, joint speed and ARM_2's deviation from hold are not checked (ARM_2's deviation is still recorded
-// and printed at the end).
+// and printed at the end). kMaxAngularSpeed only caps the target angular speed and never stops the robot.
 // 只在机器人自己不能继续时停：断线、E-stop、故障、未就绪、控制模式被切走、实时指令迟到过多、实时任务心跳丢失、
 // ARM_1 跟不上导纳目标、tcp_wrench 不是有限值。
 // The program stops only when the robot cannot go on: disconnection, E-stop, fault, not operational, control mode
@@ -539,11 +549,13 @@ std::pair<double, double> TrackError(
 }
 
 // 导纳模型往前走 1 ms：按 ARM_1 末端外力 wrench 更新目标速度 cmd.twist_d、目标位姿 cmd.pose_d。
-// 能拖的轴 M·dv/dt + D·v = F；锁定的轴速度 0、目标保持进入 ③ 时的位姿。
+// 能拖的轴 M·dv/dt + D·v = F，目标角速度 |ω| 再限到 targets.max_angular_speed；
+// 锁定的轴速度 0、目标保持进入 ③ 时的位姿。
 // 位姿是 RDK 的 [x y z qw qx qy qz]，速度、外力是 [平移 3 个, 转动 3 个]，都在世界坐标系。
 // 每 1 ms 在实时任务里调用，只用固定大小的数据，不分配内存。
 // Advances the admittance model by 1 ms: updates the target velocity cmd.twist_d and target pose cmd.pose_d from the
-// ARM_1 TCP wrench. Draggable axes follow M·dv/dt + D·v = F; locked axes keep zero velocity and the entry pose.
+// ARM_1 TCP wrench. Draggable axes follow M·dv/dt + D·v = F, with the target angular speed |ω| then capped at
+// targets.max_angular_speed; locked axes keep zero velocity and the entry pose.
 // Poses are RDK [x y z qw qx qy qz]; velocities and wrenches are [3 linear, 3 angular]; all in the world frame.
 // Called every 1 ms in the RT task; uses fixed-size data only and does not allocate.
 // 返回 true = 这一周期目标角速度被 targets.max_angular_speed 限住了。/ Returns true if the target angular speed was capped this cycle.
@@ -878,7 +890,10 @@ int main(int argc, char* argv[])
         std::cerr << "实时调度器需要 root 权限：sudo " << argv[0] << " ...\n";
         return 2;
     }
-    std::ofstream log;  // 连机器人之前打开：路径不对时机器人还没动就退出。/ Opened before connecting, so a bad path exits before the robot moves.
+    // 连机器人之前打开：路径不对时机器人还没动就退出。表头在导纳开始时才写，没进入导纳就停了，留下的是 0 字节的空文件。
+    // Opened before connecting, so a bad path exits before the robot moves. The header is written when admittance
+    // starts, so a run that stops before that leaves a 0-byte file.
+    std::ofstream log;
     if (!params.log_path.empty()) {
         // 查不了（例如没有权限）就当不存在，下面 open 失败时照样退出。/ If existence cannot be checked (e.g. permissions), assume absent; a failed open still exits below.
         std::error_code exists_error;

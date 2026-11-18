@@ -21,6 +21,11 @@
 // 把 ARM_1 切回运动控制（阻塞调用，不在实时回调里）。Stop Sign 不是急停：E-stop、控制器自带的保护、下面的停机检查都照旧，
 // 不经过软停止。SOFT_STOP、HOLD 不会自己回到透明，要恢复就 Ctrl+C 结束后重新运行。
 //
+// 11-16 真机 Test B（logs/soft_stop_B_*，README_arm1_soft_stop.md 第 8 节）用默认参数进入 ③ 的 4 次，
+// 都没到发 Stop Sign：没人碰 ARM_1，③ 开始后 0.6–6 s 它自己转起来、越转越快，外力读数在动起来之后才升。
+// 前 2 次被当时的 ARM_1 关节速度停机停下；这项停机去掉之后，后 2 次都转到姿态离目标 90°，机器人故障停机（301005），
+// 见 kRotStiffness。
+//
 // 编译（项目根目录）：cmake -S script -B .build/script && cmake --build .build/script
 // 运行（实时调度器需要 root）：sudo .build/script/arm1_transparent_arm2_hold_rt_cartesian <序列号> [选项]；--help 看选项。
 
@@ -77,6 +82,8 @@ const std::array<bool, kCartDoF / 2> kForceAxis = {true, true, true};
 //   （文档："Setting motion stiffness of a motion-controlled Cartesian axis to 0 will make this axis free-floating"）；
 //   范围 0 到 K_x_nom（启动时打印），等于 K_x_nom 就是锁住姿态。X Y Z 的刚度用 K_x_nom，只对锁住的轴起作用。
 //   阻尼比 Z_x 用 RDK 默认 0.7：文档警告改它可能不稳定。
+//   刚度 0 时阻尼也是 0（Z_x 是阻尼比），目标姿态一直是进入 ③ 时的姿态，笛卡尔阻抗对转动既不拉回也不减速；
+//   实际姿态离目标超过 90° 时，控制器报 301005 "Orientation error exceeds 90 degrees" 故障停机（11-16 Test B）。
 const std::array<double, kCartDoF / 2> kRotStiffness = {0.0, 0.0, 0.0};
 // kMaxLinearVel：SetForceControlAxis 的 max_linear_vel，力控的 X Y Z 轴末端线速度上限 [m/s]，防止跑走。
 //   范围 0.005–2.0，RDK 默认 1.0。越大越不拦手。只在主动力控下有效。
@@ -135,7 +142,8 @@ constexpr int kZeroCalibExtraPayload = 0;  // calibExtraPayload：标定时是�
 
 // ========== 安全检查和流程：不发给机器人、不影响手感，只决定什么时候整机停 ==========
 // ARM_1 不查速度（2026-11-16 按要求去掉了原来的关节速度 > 1 rad/s 停机）：转动轴没有限速，X Y Z 只有主动力控下的
-// kMaxLinearVel。剩下控制器自带的保护和 E-stop。
+// kMaxLinearVel。剩下控制器自带的保护和 E-stop：去掉之后 11-16 Test B 的 2 次，ARM_1 自己转到关节最快 5–6 rad/s，
+// 都是姿态离目标 90° 时由控制器的 301005 故障停下。
 // 安全：①②③ 全程 ARM_2 任一关节离开 hold 位置超过它就整机停 [rad]，0.01 rad ≈ 0.6°。结束时打印 ③ 期间 ARM_2 最大偏离和速度。
 constexpr double kArm2MaxPosError = 0.01;
 constexpr double kOperationalTimeout = 30.0;  // 流程：上伺服后等待就绪的最长时间 [s]。
@@ -143,7 +151,7 @@ constexpr double kHomeTimeout = 30.0;  // 流程：① 回正到位并停稳的�
 constexpr double kZeroTimeout = 10.0;  // 流程：② 受力回 0 结束的最长时间 [s]。
 constexpr auto kMonitorPeriod = std::chrono::milliseconds(10);  // 流程：主线程检查断线、E-stop、故障、控制模式的周期。
 constexpr double kLateCycleMs = 2.0;  // 统计：实时周期间隔超过它算一次迟到，结束时打印次数，不停机 [ms]。
-// 不做开始时的静止检查：没人推时慢慢漂（floating）不停机。
+// 不做开始时的静止检查：没人推时 ARM_1 自己动也不停机（11-16 Test B 没人碰也越转越快，见文件开头）。
 
 struct Params  // 命令行覆盖之后实际使用的参数。
 {
@@ -342,7 +350,7 @@ double SteadySeconds()  // 单调时钟的当前时刻 [s]：实时任务算软�
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// 绝对值超过 limit 的关节，例如 "J2 1.05、J4 1.10"；都没超过返回空串。
+// 绝对值超过 limit 的关节，例如 "J1 0.012、J3 0.011"；都没超过返回空串。
 template <typename Values>
 std::string OverLimit(const Values& values, double limit, int decimals)
 {
