@@ -44,6 +44,10 @@
 //          by M (kAdmittanceMass) and D (kAdmittanceDamping), plus the deadband and the angular speed cap, not by
 //          the robot's own stiffness or damping. Locked axes keep zero target velocity and the entry pose, held at
 //          nominal stiffness.
+//          安全限制（11-18）：目标速度、角速度有上限，只限速；实测速度、角速度、外力、外力矩超过停机线就整机停，
+//          见"安全限制：在这里调"。
+//          Safety limits (11-18): the target speed and angular speed are capped (limit only); measured speed, angular
+//          speed, force or moment past a stop line stops the robot, see "Safety limits: tune here".
 //          和改之前的降刚度浮动不同：那时目标跟随实测位姿、刚度降到 0，手直接推机器人，tcp_wrench 只记录不用；
 //          现在 tcp_wrench 是控制输入，机器人本身一直是硬的位置控制。
 //          Unlike the earlier reduced-stiffness floating, where the target followed the measured pose at zero
@@ -158,18 +162,6 @@ constexpr std::array<double, rdk::kCartDoF> kAdmittanceMass = {5.0, 5.0, 5.0, 0.
 //   11-16, --mass=5 --damping=10 put 5 and 10 on all 6 axes, 100× the default rotational damping, and the TCP barely
 //   twisted (in 23 s of dragging its orientation changed by at most 7–12°, at most 0.15 rad/s).
 constexpr std::array<double, rdk::kCartDoF> kAdmittanceDamping = {5.0, 5.0, 5.0, 0.1, 0.1, 0.1};
-// kMaxAngularSpeed：ARM_1 目标角速度 |ω|（世界坐标系，Rx Ry Rz 合起来）的上限 [rad/s]。导纳算出的 ω 超过它就按比例缩到
-//   这个值，方向不变：手再用力也转不快，松手后从这个速度开始减速。只限速、不停机，平移不受影响。工具朝下时扭末端主要是
-//   J7 在转。默认转动阻尼 0.1 N·m·s/rad、死区 0.05 N·m 时，一直扭 0.1 N·m 就到上限。11-16 转动 0.15、0.3 的 5 次
-//   导纳日志（logs/i8_adm_m5_d10_r015_03_*）里末端角速度最快 0.34–0.67 rad/s。必须 > 0。命令行 --max-angular-speed=W。
-// kMaxAngularSpeed: cap on ARM_1's target angular speed |ω| (world frame, Rx Ry Rz combined) [rad/s]. A larger ω from
-//   the admittance model is scaled down to it, keeping the direction: pushing harder does not turn faster, and after
-//   release it slows down from this speed. It only limits speed, never stops, and leaves translation alone. With the
-//   tool pointing down, twisting the TCP mostly turns J7. With the default rotational damping 0.1 N·m·s/rad and the
-//   0.05 N·m deadband, a steady 0.1 N·m twist already reaches the cap. The 5 admittance logs of 11-16 with rotation
-//   at 0.15, 0.3 (logs/i8_adm_m5_d10_r015_03_*) peak at 0.34–0.67 rad/s. Must be > 0.
-//   Command line: --max-angular-speed=W.
-constexpr double kMaxAngularSpeed = 0.5;
 // kForceDeadband、kMomentDeadband：F 的死区，力 [N]、力矩 [N·m]。能拖的轴上的力（力矩）合起来不到这个值就当作 0，超过的
 //   部分才进导纳模型，过死区时不跳。死区就是起动要用的最小力：越小越透明，但 tcp_wrench 零点误差超出死区的部分会让末端
 //   以 超出量/D 的速度一直走（转动的 D 小，最容易漂）。浮动日志里静止时 |F| 中位数大多 0.02–0.30 N、起动力中位数
@@ -235,6 +227,68 @@ const std::array<std::string, rdk::kCartDoF> kAxisNames = {"X", "Y", "Z", "Rx", 
 constexpr bool kAnyRotationFree = !kLockRx || !kLockRy || !kLockRz;  // Rx Ry Rz 里至少一个能拖。/ At least one rotation axis is draggable.
 constexpr bool kAllRotationFree = !kLockRx && !kLockRy && !kLockRz;  // Rx Ry Rz 三个都能拖。/ All three rotation axes are draggable.
 
+// ======================== 安全限制：在这里调 / Safety limits: tune here ========================
+// 11-18 按要求给 ARM_1 的速度、角速度、力加上安全限制，分两层，都只在 ③ 导纳期间起作用：
+//   上限（只限速、不停机）：导纳算出的目标速度 |v|、角速度 |ω| 超过上限就按比例缩到上限，方向不变。限的是导纳模型的
+//     速度本身：手再用力也不会更快，松手后从上限开始减速。正常拖动由它管着，碰不到停机线。
+//   停机线（整机停，和"跟不上导纳目标"一样走 Stop()）：每 1 ms 查一次 ARM_1 的实测值，超过就停。
+//     实测速度、角速度超过上限的 kSpeedStopFactor 倍：上限管着还超这么多，说明机器人没按指令走。
+//     实测外力、外力矩超过 kStopForce、kStopMoment：失控振荡、撞到东西、外力估算出错。
+//   力只设停机线、不设上限：ARM_1 是位置控制，外力是手和环境加的，程序管不住，只能停。
+//   都是 ARM_1 末端、世界坐标系；平移 3 个轴、转动 3 个轴各自合起来算大小，锁定的轴也算。
+//   依据是 11-16 的 9 次导纳日志：正常拖动最快 0.37 m/s、0.67 rad/s，外力最大 17.3 N、外力矩 2.0 N·m；
+//   两次失控（17:40、18:16）是越摆越大的 2–4 Hz 振荡，外力 0.4 s 内从 17 N 涨到 20.6 N、75.6 N。
+// On 11-18, as asked, ARM_1's speed, angular speed and force got safety limits, in two layers, both active only
+// during ③ admittance:
+//   Caps (limit only, never stop): a target |v| or |ω| from the admittance model above its cap is scaled down to it,
+//     keeping the direction. The model's own velocity is capped: pushing harder goes no faster, and release
+//     decelerates from the cap. Normal dragging is held by the caps and never reaches the stop lines.
+//   Stop lines (whole robot stops via Stop(), like "cannot follow the admittance target"): ARM_1's measured values are
+//     checked every 1 ms.
+//     Measured speed or angular speed above kSpeedStopFactor × its cap: exceeding the cap by that much means the robot
+//     is not following the commands.
+//     Measured force or moment above kStopForce, kStopMoment: a runaway oscillation, a collision, or a bad estimate.
+//   Force has a stop line but no cap: ARM_1 is position-controlled and the force comes from the hand and the
+//   environment, so the program cannot hold it down, only stop.
+//   All are at ARM_1's TCP in the world frame; the 3 linear and the 3 angular axes are each combined into one norm,
+//   locked axes included.
+//   Based on the nine 11-16 admittance logs: normal dragging peaked at 0.37 m/s, 0.67 rad/s, 17.3 N and 2.0 N·m; the
+//   two runaways (17:40, 18:16) were growing 2–4 Hz oscillations whose force rose from 17 N to 20.6 N and 75.6 N
+//   within 0.4 s.
+//
+// kMaxLinearSpeed：目标速度 |v| 的上限 [m/s]。0.25 是 ISO 10218-1 手动、示教时的降速 250 mm/s。11-16 日志里每次拖动
+//   最快 0.04–0.37 m/s，最快的几下会被限住。必须 > 0。命令行 --max-linear-speed=V。
+// kMaxLinearSpeed: cap on the target |v| [m/s]. 0.25 is the 250 mm/s reduced speed of ISO 10218-1 for manual and
+//   teaching operation. The 11-16 runs peak at 0.04–0.37 m/s each, so the fastest strokes get capped. Must be > 0.
+//   Command line: --max-linear-speed=V.
+constexpr double kMaxLinearSpeed = 0.25;
+// kMaxAngularSpeed：目标角速度 |ω| 的上限 [rad/s]，11-16 加的。工具朝下时扭末端主要是 J7 在转。11-16 晚上用 0.5 跑的
+//   3 次里，3.7–8.7% 的时间顶在上限。必须 > 0。命令行 --max-angular-speed=W。
+// kMaxAngularSpeed: cap on the target |ω| [rad/s], added on 11-16. With the tool pointing down, twisting the TCP mostly
+//   turns J7. In the three 11-16 evening runs at 0.5, it was at the cap 3.7–8.7% of the time. Must be > 0.
+//   Command line: --max-angular-speed=W.
+constexpr double kMaxAngularSpeed = 0.5;
+// kSpeedStopFactor：实测速度、角速度超过上限的这么多倍就停机。角速度上限 0.5 时实测最快到过 0.67 rad/s（跟踪超调约
+//   1.3 倍），取 2 倍留余量：默认停机线 0.5 m/s、1 rad/s。没有命令行参数，跟着上限一起变。
+// kSpeedStopFactor: stop when the measured speed or angular speed exceeds its cap by this factor. With the angular cap
+//   at 0.5, the measured value reached 0.67 rad/s (about 1.3× tracking overshoot), so 2× leaves margin: the default
+//   stop lines are 0.5 m/s and 1 rad/s. No command-line option; the stop lines follow the caps.
+constexpr double kSpeedStopFactor = 2.0;
+// kStopForce：实测外力 |F| 的停机线 [N]。正常拖动最大 17.3 N，两次失控 20.6、75.6 N。顶着速度上限使劲推也可能超过，
+//   超过就停。必须大于力死区。命令行 --stop-force=F。
+// kStopForce: stop line on the measured |F| [N]. Normal dragging peaked at 17.3 N, the two runaways at 20.6 and
+//   75.6 N. Pushing hard against the speed cap can also cross it, and then the robot stops. Must exceed the force
+//   deadband. Command line: --stop-force=F.
+constexpr double kStopForce = 20.0;
+// kStopMoment：实测外力矩 |M| 的停机线 [N·m]。正常拖动最大 2.0 N·m（顶着角速度上限使劲扭）；两次失控只到 0.45、
+//   1.33 N·m，失控靠 kStopForce 停。必须大于力矩死区。命令行 --stop-moment=M。
+// kStopMoment: stop line on the measured |M| [N·m]. Normal dragging peaked at 2.0 N·m (twisting hard against the
+//   angular cap); the two runaways reached only 0.45 and 1.33 N·m and are caught by kStopForce. Must exceed the
+//   moment deadband. Command line: --stop-moment=M.
+constexpr double kStopMoment = 3.0;
+static_assert(kSpeedStopFactor > 1.0, "停机线要高于上限 / stop lines must be above the caps");
+// ====================================================================================
+
 // ===== ③ ARM_2 hold：发给机器人，只影响 ARM_2，不影响 ARM_1 手感 / Sent to the robot; affects ARM_2 only, not ARM_1's feel =====
 // kArm2NullSpaceRefTracking：ARM_2 的 SetNullSpaceObjectives ref_positions_tracking，肘部拉回 hold 姿态的权重。
 //   范围 0.1–1.0，RDK 默认 0.5；取上限 1.0，拉得最紧。11-03 实测默认 0.5 时 ARM_2 末端不动，但 J1、J3 反向转
@@ -262,16 +316,18 @@ constexpr int kZeroCalibExtraPayload = 0;  // calibExtraPayload：额外负载�
 
 // ========== 停机条件和流程：不发给机器人、不影响手感，只决定什么时候整机停 ==========
 // ========== Stop conditions and sequencing: not sent to the robot, no effect on feel; they only decide when to stop ==========
-// 11-03 按要求不设速度、位置限位类的停机检查：ARM_1 末端速度、离起点的位移、关节离极限的余量、关节速度，
-// ARM_2 偏离 hold 位置，都不检查（ARM_2 的偏离仍然记录，结束时打印）。kMaxAngularSpeed 只限目标角速度，不停机。
-// As requested on 11-03 there are no speed- or position-limit stop checks: ARM_1 TCP speed, displacement from the start,
-// joint-limit margin, joint speed and ARM_2's deviation from hold are not checked (ARM_2's deviation is still recorded
-// and printed at the end). kMaxAngularSpeed only caps the target angular speed and never stops the robot.
-// 只在机器人自己不能继续时停：断线、E-stop、故障、未就绪、控制模式被切走、实时指令迟到过多、实时任务心跳丢失、
-// ARM_1 跟不上导纳目标、tcp_wrench 不是有限值。
-// The program stops only when the robot cannot go on: disconnection, E-stop, fault, not operational, control mode
-// switched away, too many late RT commands, lost RT heartbeat, ARM_1 unable to follow the admittance target, or a
-// non-finite tcp_wrench.
+// 11-03 按要求去掉了速度、位置限位类的停机检查；11-18 按要求加回 ARM_1 末端速度、角速度、外力的安全停机线，见上面
+// "安全限制：在这里调"。离起点的位移、关节离极限的余量、关节速度、ARM_2 偏离 hold 位置仍然不检查（ARM_2 的偏离照样
+// 记录，结束时打印）。
+// Speed- and position-limit stop checks were removed on 11-03 as requested; on 11-18, as requested, safety stop lines
+// on ARM_1's TCP speed, angular speed and wrench came back, see "Safety limits: tune here" above. Displacement from the
+// start, joint-limit margin, joint speed and ARM_2's deviation from hold are still not checked (ARM_2's deviation is
+// still recorded and printed at the end).
+// 停机条件：断线、E-stop、故障、未就绪、控制模式被切走、实时指令迟到过多、实时任务心跳丢失、ARM_1 跟不上导纳目标、
+// tcp_wrench 不是有限值、ARM_1 超过安全停机线。
+// Stop conditions: disconnection, E-stop, fault, not operational, control mode switched away, too many late RT
+// commands, lost RT heartbeat, ARM_1 unable to follow the admittance target, a non-finite tcp_wrench, or ARM_1 past a
+// safety stop line.
 // 控制器自带的保护（关节硬极限、安全设置里的限速、碰撞检测等）RDK 关不掉，照常有效。
 // The controller's own protections (hard joint limits, safety speed limits, collision detection, etc.) cannot be
 // disabled through RDK and stay active.
@@ -281,13 +337,13 @@ constexpr auto kHeartbeatTimeout = std::chrono::milliseconds(100);
 // Safety: SetTimelinessFailureLimit, maximum percentage of late commands within 1 s, RDK default 2.
 constexpr double kTimelinessFailureLimit = 2.0;
 // 安全：导纳开始后 ARM_1 实测位姿离上一次发出的目标位姿超过这么多就整机停。目标是导纳模型积分出来的，不看机器人在哪：
-//   机器人被挡住、到关节极限、被控制器限速时跟不上，目标还会接着往前走，名义刚度推得越来越狠。不是速度、位置限位，
-//   拖得多快、多远都不查。结束时打印 ③ 期间的最大跟踪误差，按实测再调。
+//   机器人被挡住、到关节极限、被控制器限速时跟不上，目标还会接着往前走，名义刚度推得越来越狠。不是位置限位，
+//   拖得多远都不查。结束时打印 ③ 期间的最大跟踪误差，按实测再调。
 // Safety: once admittance runs, stop if ARM_1's measured pose is this far from the last commanded target. The target is
 //   integrated by the admittance model regardless of where the robot is: if the robot is blocked, at a joint limit or
 //   speed-limited by the controller, the target keeps moving and the nominal stiffness pushes ever harder. This is not
-//   a speed or position limit; how fast or far the arm is dragged is not checked. The maximum tracking error during ③
-//   is printed at the end; adjust these from measurements.
+//   a position limit; how far the arm is dragged is not checked. The maximum tracking error during ③ is printed at the
+//   end; adjust these from measurements.
 constexpr double kMaxTrackPositionError = 0.01;  // [m]，名义刚度 15000 N/m 下约 150 N。/ About 150 N at the nominal 15000 N/m.
 constexpr double kMaxTrackAngleError = 0.03;  // [rad]，名义刚度 2000 N·m/rad 下约 60 N·m。/ About 60 N·m at the nominal 2000 N·m/rad.
 constexpr uint64_t kWarmupCycles = 100;  // 流程：③ 先锁在起始位姿成功发满这么多次指令，才开始导纳。/ Commands sent at the start pose before admittance begins.
@@ -304,7 +360,10 @@ struct Params  // 命令行覆盖之后实际使用的参数。/ Parameters in e
     std::string robot_sn;
     std::array<double, rdk::kCartDoF> mass = kAdmittanceMass;
     std::array<double, rdk::kCartDoF> damping = kAdmittanceDamping;
+    double max_linear_speed = kMaxLinearSpeed;
     double max_angular_speed = kMaxAngularSpeed;
+    double stop_force = kStopForce;
+    double stop_moment = kStopMoment;
     double null_space_tracking = kNullSpaceRefTracking;
     bool null_space_follow = kNullSpaceFollow;
     std::string log_path;  // 空 = 不记录。/ Empty = no log.
@@ -318,7 +377,10 @@ struct RtRecord  // ③ 期间的最大值：实时任务写，调度器停下�
     std::array<double, kDoF> arm2_max_vel = {};  // ARM_2 速度 [rad/s]。/ ARM_2 joint speed [rad/s].
     double arm1_max_position_error = 0.0;  // 导纳开始后 ARM_1 实测离目标的位置 [m]。/ ARM_1 position tracking error under admittance [m].
     double arm1_max_angle_error = 0.0;  // 导纳开始后 ARM_1 实测离目标的姿态 [rad]。/ ARM_1 orientation tracking error under admittance [rad].
-    uint64_t angular_limited_cycles = 0;  // 目标角速度被 max_angular_speed 限住的周期数（1 ms）。/ Cycles (1 ms) with the target angular speed capped.
+    // 下面三项都是 [平移, 转动]，只在导纳期间记录。/ The three below are [linear, angular], recorded under admittance only.
+    std::array<uint64_t, 2> speed_limited_cycles = {};  // 目标速度、角速度被上限限住的周期数（1 ms）。/ Cycles (1 ms) with the target speed capped.
+    std::array<double, 2> arm1_max_speed = {};  // ARM_1 实测最大速度 [m/s]、角速度 [rad/s]。/ ARM_1 measured max speed and angular speed.
+    std::array<double, 2> arm1_max_wrench = {};  // ARM_1 实测最大外力 [N]、外力矩 [N·m]。/ ARM_1 measured max force and moment.
 };
 
 // ③ 的指令和导纳模型：进入 ③ 时定好，调度器启动后只有实时任务读写，主线程不再碰。
@@ -338,7 +400,10 @@ struct RtTargets
     // gain = (1 − decay)/D. Numerically stable for any M and D.
     std::array<double, rdk::kCartDoF> decay = {};
     std::array<double, rdk::kCartDoF> gain = {};
-    double max_angular_speed = 0.0;  // 目标角速度 |ω| 的上限 [rad/s]，见 kMaxAngularSpeed。/ Cap on the target |ω| [rad/s], see kMaxAngularSpeed.
+    // 安全限制，见"安全限制：在这里调"，都是 [平移, 转动]。/ Safety limits, see "Safety limits: tune here"; all [linear, angular].
+    std::array<double, 2> max_speed = {};  // 目标速度上限 [m/s, rad/s]。/ Caps on the target speed [m/s, rad/s].
+    std::array<double, 2> stop_speed = {};  // 实测速度停机线 [m/s, rad/s]。/ Stop lines on the measured speed [m/s, rad/s].
+    std::array<double, 2> stop_wrench = {};  // 实测外力停机线 [N, N·m]。/ Stop lines on the measured wrench [N, N·m].
     // ARM_2 hold 时的关节位置 [rad]，只用来记录 ARM_2 动了多少，不停机。/ ARM_2 hold joint positions [rad], only to record how far it moved.
     std::vector<double> arm2_q;
 };
@@ -354,6 +419,13 @@ std::atomic<int64_t> g_last_sent_ns = {0};  // ③ 实时任务最近一次成�
 // Set by main after the ③ warm-up: from then on ARM_1's target is updated by the admittance model every 1 ms.
 std::atomic<bool> g_admittance = {false};
 
+std::string Num(double value)  // 数字转成最短的文字，例如 10、0.05。/ Shortest text for a number, e.g. 10, 0.05.
+{
+    std::ostringstream oss;
+    oss << value;
+    return oss.str();
+}
+
 void PrintHelp()
 {
     std::cout << "用法：sudo .build/script/intermediate8_realtime_cartesian_floating <序列号> [选项]\n"
@@ -364,9 +436,22 @@ void PrintHelp()
                  "                    逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个，例如 --mass=5,5,5,0.3,0.3,0.3\n"
                  "  --damping=D       覆盖 kAdmittanceDamping：虚拟阻尼 > 0，X Y Z [N·s/m]、Rx Ry Rz [N·m·s/rad]；\n"
                  "                    一直用力 F 推最后匀速 (F − 死区)/D，越小越轻。1 个数（只改 X Y Z）或逗号分开的 6 个数，同 --mass\n"
+                 "  安全限制（只在 ③ 导纳期间起作用，见源码\"安全限制：在这里调\"）：\n"
+                 "  --max-linear-speed=V\n"
+                 "                    覆盖 kMaxLinearSpeed：ARM_1 目标速度 |v| 的上限 [m/s] > 0；超过就按比例缩到它，只限速、\n"
+                 "                    不停机。实测速度超过 "
+              << Num(kSpeedStopFactor)
+              << " 倍上限就停机\n"
                  "  --max-angular-speed=W\n"
                  "                    覆盖 kMaxAngularSpeed：ARM_1 目标角速度 |ω| 的上限 [rad/s] > 0；超过就按比例缩到它，\n"
-                 "                    只限速、不停机，平移不受影响\n"
+                 "                    只限速、不停机。实测角速度超过 "
+              << Num(kSpeedStopFactor)
+              << " 倍上限就停机\n"
+                 "  --stop-force=F    覆盖 kStopForce：ARM_1 实测外力 |F| 超过 F [N] 就停机，要大于力死区 "
+              << Num(kForceDeadband)
+              << " N\n"
+                 "  --stop-moment=M   覆盖 kStopMoment：ARM_1 实测外力矩 |M| 超过 M [N·m] 就停机，要大于力矩死区 "
+              << Num(kMomentDeadband) << " N·m\n"
                  "  --nullspace=W     覆盖 kNullSpaceRefTracking：肘部拉回参考姿态的权重 [0.1, 1]\n"
                  "  --nullspace-follow\n"
                  "                    覆盖 kNullSpaceFollow：肘部参考姿态每 10 ms 跟随实测关节位置，肘部不再被拉回；\n"
@@ -376,13 +461,6 @@ void PrintHelp()
                  "  --no-home         不先回正，在当前姿态受力回 0 后直接开始\n"
                  "  --clear-fault     启动时若有故障先尝试清除；不加则直接退出\n"
                  "  -h, --help        显示本说明\n";
-}
-
-std::string Num(double value)  // 数字转成最短的文字，例如 10、0.05。/ Shortest text for a number, e.g. 10, 0.05.
-{
-    std::ostringstream oss;
-    oss << value;
-    return oss.str();
 }
 
 // kLockAxis 里等于 locked 的轴，例如 "X Y Z"；一个都没有时是 "无"。
@@ -458,9 +536,21 @@ std::string ParseArgs(int argc, char* argv[], Params& params)
             if (!ParseAxisValues(value, params.damping)) {
                 return "--damping= 后面要跟 1 个数或逗号分开的 6 个数";
             }
+        } else if (OptionValue(arg, "--max-linear-speed", value)) {
+            if (!ParseNumber(value.c_str(), params.max_linear_speed)) {
+                return "--max-linear-speed= 后面要跟 1 个数";
+            }
         } else if (OptionValue(arg, "--max-angular-speed", value)) {
             if (!ParseNumber(value.c_str(), params.max_angular_speed)) {
                 return "--max-angular-speed= 后面要跟 1 个数";
+            }
+        } else if (OptionValue(arg, "--stop-force", value)) {
+            if (!ParseNumber(value.c_str(), params.stop_force)) {
+                return "--stop-force= 后面要跟 1 个数";
+            }
+        } else if (OptionValue(arg, "--stop-moment", value)) {
+            if (!ParseNumber(value.c_str(), params.stop_moment)) {
+                return "--stop-moment= 后面要跟 1 个数";
             }
         } else if (OptionValue(arg, "--nullspace", value)) {
             if (!ParseNumber(value.c_str(), params.null_space_tracking)) {
@@ -490,8 +580,18 @@ std::string ParseArgs(int argc, char* argv[], Params& params)
             return "damping 的 " + kAxisNames[i] + " = " + Num(params.damping[i]) + "，要大于 0";
         }
     }
+    if (!(params.max_linear_speed > 0.0)) {
+        return "max_linear_speed = " + Num(params.max_linear_speed) + "，要大于 0";
+    }
     if (!(params.max_angular_speed > 0.0)) {
         return "max_angular_speed = " + Num(params.max_angular_speed) + "，要大于 0";
+    }
+    // 停机线不高于死区的话，一拖就停。/ A stop line at or below the deadband would stop on every drag.
+    if (!(params.stop_force > kForceDeadband)) {
+        return "stop_force = " + Num(params.stop_force) + "，要大于力死区 " + Num(kForceDeadband) + " N";
+    }
+    if (!(params.stop_moment > kMomentDeadband)) {
+        return "stop_moment = " + Num(params.stop_moment) + "，要大于力矩死区 " + Num(kMomentDeadband) + " N·m";
     }
     if (!(params.null_space_tracking >= 0.1 && params.null_space_tracking <= 1.0)) {
         return "null_space_tracking = " + Num(params.null_space_tracking) + " 超出范围 [0.1, 1]";
@@ -558,8 +658,10 @@ std::pair<double, double> TrackError(
 // targets.max_angular_speed; locked axes keep zero velocity and the entry pose.
 // Poses are RDK [x y z qw qx qy qz]; velocities and wrenches are [3 linear, 3 angular]; all in the world frame.
 // Called every 1 ms in the RT task; uses fixed-size data only and does not allocate.
-// 返回 true = 这一周期目标角速度被 targets.max_angular_speed 限住了。/ Returns true if the target angular speed was capped this cycle.
-bool AdmittanceStep(const std::array<double, rdk::kCartDoF>& wrench, const RtTargets& targets, rdk::RtCartesianCmd& cmd)
+// 返回 [平移, 转动]：这一周期目标速度、角速度有没有被 targets.max_speed 限住。
+// Returns [linear, angular]: whether the target speed and angular speed were capped by targets.max_speed this cycle.
+std::array<bool, 2> AdmittanceStep(
+    const std::array<double, rdk::kCartDoF>& wrench, const RtTargets& targets, rdk::RtCartesianCmd& cmd)
 {
     // F：去掉锁定的轴，力、力矩各自按合起来的大小过死区，方向不变。
     // F: drop locked axes, then apply the deadband to the force and moment magnitudes separately, keeping direction.
@@ -580,16 +682,19 @@ bool AdmittanceStep(const std::array<double, rdk::kCartDoF>& wrench, const RtTar
     for (size_t i = 0; i < rdk::kCartDoF; ++i) {
         twist[i] = kLockAxis[i] ? 0.0 : targets.decay[i] * twist[i] + targets.gain[i] * force[i];
     }
-    // 角速度限制：|ω| 超过上限就按比例缩到上限，方向不变。限的是模型状态本身，所以手一直推也停在上限，松手后从上限减速。
-    // Angular speed cap: scale ω down to the cap if |ω| exceeds it, keeping the direction. The model state itself is
-    // capped, so a sustained push stays at the cap and release decelerates from it.
-    bool limited = false;
-    if (const double rate = std::hypot(twist[3], twist[4], twist[5]); rate > targets.max_angular_speed) {
-        const double scale = targets.max_angular_speed / rate;
-        for (size_t i = 3; i < rdk::kCartDoF; ++i) {
-            twist[i] *= scale;
+    // 速度上限：|v|、|ω| 各自超过上限就按比例缩到上限，方向不变。限的是模型状态本身，所以手一直推也停在上限，
+    // 松手后从上限减速。
+    // Speed caps: scale v and ω each down to its cap when its norm exceeds it, keeping the direction. The model state
+    // itself is capped, so a sustained push stays at the cap and release decelerates from it.
+    std::array<bool, 2> limited = {false, false};
+    for (const size_t first : {size_t {0}, size_t {3}}) {
+        const double cap = targets.max_speed[first / 3];
+        if (const double speed = std::hypot(twist[first], twist[first + 1], twist[first + 2]); speed > cap) {
+            for (size_t i = first; i < first + 3; ++i) {
+                twist[i] *= cap / speed;
+            }
+            limited[first / 3] = true;
         }
-        limited = true;
     }
     // 位置：锁定的轴速度是 0，一直是进入 ③ 时的值。/ Position: locked axes have zero velocity and keep the entry value.
     for (size_t i = 0; i < 3; ++i) {
@@ -638,10 +743,45 @@ bool AdmittanceStep(const std::array<double, rdk::kCartDoF>& wrench, const RtTar
     return limited;
 }
 
-// 实时任务：每 1 ms 记录一次 ARM_2 的偏离（不停机）；导纳开始后检查 ARM_1 跟不跟得上、按外力更新 ARM_1 的目标；
-// 然后把两条臂的末端指令放进同一条 StreamCartesianMotionForce 发出去。
-// RT task, every 1 ms: record ARM_2's deviation (no stop); under admittance, check that ARM_1 keeps up and update its
-// target from the wrench; then send both arms' TCP commands in one StreamCartesianMotionForce call.
+// 安全停机线：ARM_1 实测速度、角速度、外力、外力矩超过 targets 里的停机线就抛出，同时记下最大值。平移、转动各自按
+// 3 个轴合起来的大小比，锁定的轴也算。导纳期间每 1 ms 在实时任务里调用；不超线时不分配内存。
+// Safety stop lines: throws if ARM_1's measured speed, angular speed, force or moment is past its stop line in
+// targets, and records the maxima. Linear and angular parts are each compared as the norm over their 3 axes, locked
+// axes included. Called every 1 ms in the RT task under admittance; allocates only when a line is crossed.
+void CheckSafetyStops(const rdk::RobotStates& arm1, const RtTargets& targets, RtRecord& record)
+{
+    constexpr std::array<const char*, 2> kSpeedName = {"末端速度", "末端角速度"};
+    constexpr std::array<const char*, 2> kSpeedUnit = {" m/s", " rad/s"};
+    constexpr std::array<const char*, 2> kWrenchName = {"末端外力", "末端外力矩"};
+    constexpr std::array<const char*, 2> kWrenchUnit = {" N", " N·m"};
+    constexpr std::array<const char*, 2> kWrenchOption = {"--stop-force", "--stop-moment"};
+    for (const size_t first : {size_t {0}, size_t {3}}) {
+        const size_t k = first / 3;
+        const double speed = std::hypot(arm1.tcp_twist[first], arm1.tcp_twist[first + 1], arm1.tcp_twist[first + 2]);
+        const double wrench
+            = std::hypot(arm1.tcp_wrench[first], arm1.tcp_wrench[first + 1], arm1.tcp_wrench[first + 2]);
+        record.arm1_max_speed[k] = std::max(record.arm1_max_speed[k], speed);
+        record.arm1_max_wrench[k] = std::max(record.arm1_max_wrench[k], wrench);
+        // 写成 !(… <= …)，NaN 也停。/ Written as !(… <= …) so NaN stops too.
+        if (!(speed <= targets.stop_speed[k])) {
+            throw std::runtime_error(std::string("ARM_1 ") + kSpeedName[k] + " " + Num(speed) + kSpeedUnit[k]
+                                     + " 超过安全停机线 " + Num(targets.stop_speed[k]) + kSpeedUnit[k] + "（上限 "
+                                     + Num(targets.max_speed[k]) + kSpeedUnit[k] + " 的 " + Num(kSpeedStopFactor)
+                                     + " 倍）");
+        }
+        if (!(wrench <= targets.stop_wrench[k])) {
+            throw std::runtime_error(std::string("ARM_1 ") + kWrenchName[k] + " " + Num(wrench) + kWrenchUnit[k]
+                                     + " 超过安全停机线 " + Num(targets.stop_wrench[k]) + kWrenchUnit[k] + "（"
+                                     + kWrenchOption[k] + "）");
+        }
+    }
+}
+
+// 实时任务：每 1 ms 记录一次 ARM_2 的偏离（不停机）；导纳开始后检查 ARM_1 跟不跟得上、有没有超过安全停机线，
+// 按外力更新 ARM_1 的目标；然后把两条臂的末端指令放进同一条 StreamCartesianMotionForce 发出去。
+// RT task, every 1 ms: record ARM_2's deviation (no stop); under admittance, check that ARM_1 keeps up and stays
+// within the safety stop lines, and update its target from the wrench; then send both arms' TCP commands in one
+// StreamCartesianMotionForce call.
 void PeriodicTask(rdk::Robot& robot, RtTargets& targets, RtRecord& record)
 {
     if (g_stop) {
@@ -681,8 +821,10 @@ void PeriodicTask(rdk::Robot& robot, RtTargets& targets, RtRecord& record)
                     throw std::runtime_error("ARM_1 tcp_wrench 不是有限值");
                 }
             }
-            if (AdmittanceStep(arm1.tcp_wrench, targets, arm1_cmd)) {
-                ++record.angular_limited_cycles;
+            CheckSafetyStops(arm1, targets, record);
+            const auto limited = AdmittanceStep(arm1.tcp_wrench, targets, arm1_cmd);
+            for (size_t k = 0; k < limited.size(); ++k) {
+                record.speed_limited_cycles[k] += limited[k] ? 1 : 0;
             }
         }
         robot.StreamCartesianMotionForce(targets.commands);
@@ -927,7 +1069,9 @@ int main(int argc, char* argv[])
         targets.decay[i] = std::exp(-params.damping[i] / params.mass[i] * kRtPeriod);
         targets.gain[i] = (1.0 - targets.decay[i]) / params.damping[i];
     }
-    targets.max_angular_speed = params.max_angular_speed;
+    targets.max_speed = {params.max_linear_speed, params.max_angular_speed};
+    targets.stop_speed = {kSpeedStopFactor * params.max_linear_speed, kSpeedStopFactor * params.max_angular_speed};
+    targets.stop_wrench = {params.stop_force, params.stop_moment};
     try {
         scheduler = std::make_unique<rdk::Scheduler>();  // 先建调度器：系统问题在连机器人之前就暴露。/ Create first so system issues surface before connecting.
         robot = std::make_unique<rdk::Robot>(params.robot_sn);
@@ -1014,13 +1158,17 @@ int main(int argc, char* argv[])
                   << "] N/m、Nm/rad，阻尼比 0.7，全程不变；能拖的轴 " << AxisNames(false) << "：导纳 M ["
                   << rdk::utility::Arr2Str(params.mass, 3) << "] kg、kg·m²，D [" << rdk::utility::Arr2Str(params.damping, 2)
                   << "] N·s/m、N·m·s/rad，时间常数 M/D [" << rdk::utility::Arr2Str(time_constant, 3) << "] s，死区 "
-                  << Num(kForceDeadband) << " N、" << Num(kMomentDeadband) << " N·m，目标角速度上限 "
-                  << Num(params.max_angular_speed) << " rad/s（只限速）；锁定的轴 " << AxisNames(true)
+                  << Num(kForceDeadband) << " N、" << Num(kMomentDeadband) << " N·m；锁定的轴 " << AxisNames(true)
                   << "：目标不动；跟不上导纳目标 " << Num(kMaxTrackPositionError * 1000.0) << " mm、"
                   << Num(kMaxTrackAngleError) << " rad 就停机；肘部拉回权重 " << Num(params.null_space_tracking)
                   << (params.null_space_follow ? "，参考姿态每 " + std::to_string(kMonitorPeriod.count())
                                                      + " ms 跟随实测关节位置"
                                                : std::string("，参考姿态 = 进入 ③ 时的姿态"))
+                  << std::endl;
+        std::cout << "ARM_1 安全限制（导纳期间）：目标速度上限 " << Num(targets.max_speed[0]) << " m/s、角速度上限 "
+                  << Num(targets.max_speed[1]) << " rad/s（只限速）；实测速度超过 " << Num(targets.stop_speed[0])
+                  << " m/s、角速度超过 " << Num(targets.stop_speed[1]) << " rad/s、外力超过 "
+                  << Num(targets.stop_wrench[0]) << " N、外力矩超过 " << Num(targets.stop_wrench[1]) << " N·m 就停机"
                   << std::endl;
         // 打印 ARM_2 离位置极限最近的关节，排查 hold 时被推动的原因。/ Print ARM_2's joint nearest its limit, to diagnose hold being pushed.
         const auto& q_min = info.q_min.at(rdk::JointGroup::ARM_2);
@@ -1125,8 +1273,13 @@ int main(int argc, char* argv[])
                       << " mm、姿态 " << Num(rt_record.arm1_max_angle_error) << " rad（停机上限 "
                       << Num(kMaxTrackPositionError * 1000.0) << " mm、" << Num(kMaxTrackAngleError) << " rad）"
                       << std::endl;
-            std::cout << "目标角速度被限在 " << Num(params.max_angular_speed) << " rad/s 的时间："
-                      << rt_record.angular_limited_cycles << " ms" << std::endl;
+            std::cout << "导纳期间 ARM_1 实测最大：速度 " << Num(rt_record.arm1_max_speed[0]) << " m/s、角速度 "
+                      << Num(rt_record.arm1_max_speed[1]) << " rad/s、外力 " << Num(rt_record.arm1_max_wrench[0])
+                      << " N、外力矩 " << Num(rt_record.arm1_max_wrench[1]) << " N·m（停机线 "
+                      << Num(targets.stop_speed[0]) << " m/s、" << Num(targets.stop_speed[1]) << " rad/s、"
+                      << Num(targets.stop_wrench[0]) << " N、" << Num(targets.stop_wrench[1]) << " N·m）；目标速度被限 "
+                      << rt_record.speed_limited_cycles[0] << " ms、角速度被限 " << rt_record.speed_limited_cycles[1]
+                      << " ms" << std::endl;
         }
     }
     if (rt_mode_checks > 0) {

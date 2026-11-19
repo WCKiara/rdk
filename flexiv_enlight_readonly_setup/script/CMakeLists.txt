@@ -22,6 +22,11 @@ foreach(program
   set_target_properties(${program} PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 endforeach()
 
+# 工具负载标定（Tool::CalibratePayloadParams）：非实时，不用 sudo。
+add_executable(calibrate_tool_payload calibrate_tool_payload.cpp)
+target_link_libraries(calibrate_tool_payload flexiv::flexiv_rdk)
+set_target_properties(calibrate_tool_payload PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+
 # ARM_1 软停止的离线单元测试：不连机器人，不链接 RDK。没装 RDK 的电脑用 arm1_soft_stop_test.cpp 开头的 g++ 命令。
 add_executable(arm1_soft_stop_test arm1_soft_stop_test.cpp)
 set_target_properties(arm1_soft_stop_test PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)

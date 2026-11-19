@@ -137,10 +137,22 @@ ARM_1 用导纳控制手拖，ARM_2 全程不动。流程和上面两个程序�
 - 外力是由关节力矩估算的：碰肘部等末端以外的地方，末端也会动。
 - 默认 6 个轴都能拖。每个轴锁不锁，由源码里的 `kLockX`、`kLockY`、`kLockZ`、`kLockRx`、`kLockRy`、`kLockRz` 决定：`true` 锁定，`false` 能拖，改了要重新编译。
 
-这个程序不设速度、位置限位类的停机检查：拖得多快、多远都不会被程序停下，ARM_2 偏离 hold 位置也不停机（结束时照样打印偏离）。
+安全限制（11-18 加的，只在导纳期间起作用）：速度、角速度有上限，只限速不停机；实测值超过停机线就整机停。
 
-- 只有一个例外：ARM_1 跟不上导纳目标超过 10 mm 或 0.03 rad（被挡住、到关节极限、被控制器限速）时整机停。结束时打印导纳期间的最大跟踪误差。
-- 转动有限速、不停机：ARM_1 目标角速度最快 0.5 rad/s（`--max-angular-speed`），手再用力也转不快，结束时打印被限了多少 ms。平移不限速。
+| 量 | 上限（只限速） | 停机线（实测超过就停） |
+|---|---|---|
+| 末端速度 | 0.25 m/s（`--max-linear-speed`） | 0.5 m/s（上限的 2 倍） |
+| 末端角速度 | 0.5 rad/s（`--max-angular-speed`） | 1 rad/s（上限的 2 倍） |
+| 末端外力 | 无 | 20 N（`--stop-force`） |
+| 末端外力矩 | 无 | 3 N·m（`--stop-moment`） |
+
+- 手再用力也不会比上限快；顶着上限使劲推，外力超过 20 N 也会停机。
+- 停机时最后一行是"已停止：ARM_1 末端外力 … 超过安全停机线 …"。结束时打印实测最大值和上限起作用的时间，按实测再调。
+- 原理和数据依据见 [README_cartesian_floating.md](README_cartesian_floating.md) 的"安全限制"。
+
+除了安全限制，不设位置限位：拖得多远都不会被程序停下，ARM_2 偏离 hold 位置也不停机（结束时照样打印偏离）。
+
+- 另外，ARM_1 跟不上导纳目标超过 10 mm 或 0.03 rad（被挡住、到关节极限、被控制器限速）时整机停。结束时打印导纳期间的最大跟踪误差。
 - 除此之外只有 E-stop 和控制器自带的保护能停住机器人，拖动时手放在 E-stop 旁边。
 - 拖动期间全程是实时模式 `RT_CARTESIAN_MOTION_FORCE`，结束时会打印一行控制模式检查结果确认这一点。
 
@@ -166,7 +178,10 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 |---|---|
 | `--mass=M` | 虚拟质量，必须 > 0。X Y Z 单位 kg，Rx Ry Rz 单位 kg·m²，默认 5,5,5,0.15,0.15,0.15。越小起动、变向越轻，太小会抖。1 个数 = 只改 X Y Z，Rx Ry Rz 保持默认；逗号分开的 6 个数 = X,Y,Z,Rx,Ry,Rz 各一个，例如 `--mass=5,5,5,0.3,0.3,0.3` |
 | `--damping=D` | 虚拟阻尼，必须 > 0。X Y Z 单位 N·s/m，Rx Ry Rz 单位 N·m·s/rad，默认 5,5,5,0.1,0.1,0.1。越小越轻、越快，松手后也滑得越远。1 个数（只改 X Y Z）或 6 个数，同 `--mass` |
-| `--max-angular-speed=W` | ARM_1 目标角速度 \|ω\| 的上限 [rad/s]，必须 > 0，默认 0.5。导纳算出来超过它就按比例缩到它、方向不变：手再用力也转不快，松手后从这个速度开始减速。只限速、不停机，平移不受影响。工具朝下时扭末端主要是 J7 在转 |
+| `--max-linear-speed=V` | ARM_1 目标速度 \|v\| 的上限 [m/s]，必须 > 0，默认 0.25。超过就按比例缩到它、方向不变，只限速、不停机。实测速度超过 2 倍上限就停机 |
+| `--max-angular-speed=W` | ARM_1 目标角速度 \|ω\| 的上限 [rad/s]，必须 > 0，默认 0.5。超过就按比例缩到它、方向不变，只限速、不停机。工具朝下时扭末端主要是 J7 在转。实测角速度超过 2 倍上限就停机 |
+| `--stop-force=F` | ARM_1 实测外力 \|F\| 的安全停机线 [N]，默认 20，要大于力死区 0.5 N |
+| `--stop-moment=M` | ARM_1 实测外力矩 \|M\| 的安全停机线 [N·m]，默认 3，要大于力矩死区 0.05 N·m |
 | `--nullspace=W` | 肘部被拉回起始姿态的权重，范围 0.1–1，默认 0.1 |
 | `--nullspace-follow` | 肘部参考姿态每 10 ms 跟随实测关节位置，肘部不再被拉回进入 ③ 时的姿态（J1 J2 J3 一起转、末端不动的那种动作变轻）。没人推时肘部可能自己漂 |
 | `--log=FILE.csv` | 导纳期间 100 Hz 记录 ARM_1 的末端位姿、速度、外力和关节状态。文件已经存在时程序不运行，不会覆盖旧记录 |
@@ -175,7 +190,7 @@ sudo .build/script/intermediate8_realtime_cartesian_floating Enlight-LL-062034 -
 
 以前的 `--scale`、`--zeta`、`--passive`、`--active` 都去掉了：导纳不降刚度，也不用力控。以前的降刚度浮动版本保留为 `intermediate8_realtime_cartesian_floating_original.cpp`，不编译。
 
-要长期改默认值，改源码里"导纳参数：在这里调"那一段：`kAdmittanceMass`、`kAdmittanceDamping`、`kMaxAngularSpeed`、`kForceDeadband`、`kMomentDeadband`、`kNullSpaceRefTracking`、`kNullSpaceFollow`、`kLockX` … `kLockRz`。其中死区和锁定没有命令行参数。停下来之后怎么看原因，同上面的"停下来之后"。详细说明见 [README_cartesian_floating.md](README_cartesian_floating.md)。
+要长期改默认值，改源码里"导纳参数：在这里调"那一段：`kAdmittanceMass`、`kAdmittanceDamping`、`kForceDeadband`、`kMomentDeadband`、`kNullSpaceRefTracking`、`kNullSpaceFollow`、`kLockX` … `kLockRz`。其中死区和锁定没有命令行参数。停下来之后怎么看原因，同上面的"停下来之后"。详细说明见 [README_cartesian_floating.md](README_cartesian_floating.md)。
 
 ### 量化对比透明度
 
@@ -216,6 +231,40 @@ find logs -name '*.csv' -empty
 - 导纳下拟合出的阻尼应该接近 `--damping`，惯量项接近 `--mass`，常数接近力死区 0.5 N。差得多，说明 ARM_1 没跟上导纳目标，或者外力估算有偏差。
 - 以前降刚度浮动的日志也可以一起比，例如 `logs/i8_ns010*.csv`、`logs/i8_passive_2026*.csv`。要写上 `.csv`，不然会匹配到 `*_terminal.txt`；也不要写 `logs/i8_passive*.csv`，它会匹配到空文件 `i8_passive_.csv`。
 - 松手漂移只看日志开头 2 秒，要换成别的秒数就加 `--hands-off=3`。
+
+## 工具负载标定（calibrate_tool_payload）
+
+用 RDK 官方的 `Tool::CalibratePayloadParams` 标定法兰上工具的质量、质心、惯量，和 `suyi Nov12.stl` 算出的参考值对比，确认后写成工具 `suyi_Nov12` 并在该臂启用。不用 `sudo`。
+
+```bash
+.build/script/calibrate_tool_payload Enlight-LL-062034
+```
+
+称过整个工具（含螺丝、夹具）的话，加 `--weighed-mass=<kg>` 和标定结果对比，它不写入。程序每一步都等你按 Enter：
+
+1. 打印已有工具和两条臂当前的工具，把 ARM_1 切到 Flange。
+2. **③ 装着工具标定**：按 Enter 后机器人自己动。RDK 没说双臂时动哪条臂，所以两条臂周围都要清空，手放在 E-stop 旁边。
+3. **④ 拆下工具再标定一次**：本机没有法兰力传感器，官方建议做这一步。拆工具前可以先拍 E-stop，松开后程序会自己上伺服。输入 `s` 回车跳过。
+4. **⑤ 对比表**：每次标定的结果和 STL 参考值。输入 `y` 回车才写入并启用；不写入时恢复原来的工具。
+
+标定期间程序记录两条臂各动了多少。只有 `--arm` 那条臂动、另一条没动，才允许写入。结果都写到 `logs/tool_payload_<日期时间>.json`。
+
+**很轻的工具不用标定。** 末端力由关节力矩估算，11-16 日志里静止时的力噪声中位数 0.02–0.11 N（p90 到 0.31 N）、力矩噪声 0.007–0.023 N·m。`suyi_Nov12` 称重 35.891 g，重力只有 0.35 N，质心力矩 0.012 N·m，和噪声同一个量级，标不出质心。这种工具直接写称重质量 + STL 质心 + STL 惯量，机器人不动：
+
+```bash
+.build/script/calibrate_tool_payload Enlight-LL-062034 --no-calibration --weighed-mass=0.035891
+```
+
+| 选项 | 作用 |
+|---|---|
+| `--no-calibration` | 不标定，机器人不动：写 `--weighed-mass` + STL 质心 + STL 形状 × 称重质量 |
+| `--arm=2` | 工具装在 ARM_2 上，默认 ARM_1 |
+| `--tool-name=NAME` | 工具名，默认 `suyi_Nov12`。已有同名工具就更新它 |
+| `--tcp-mm=X,Y,Z` | TCP 位置 [mm]，姿态与法兰相同。不给时：更新已有工具保持原来的 TCP，新建工具 TCP 在法兰中心 |
+| `--stl-inertia` | 写入的惯量改用 STL 形状 × 标定质量 |
+| `--mounted-only` | 跳过拆下工具后的第二次标定 |
+| `--log=FILE.json` | 换记录文件名；文件已经存在时不运行 |
+| `--clear-fault` | 启动时有故障先尝试清除 |
 
 ## 清除故障
 

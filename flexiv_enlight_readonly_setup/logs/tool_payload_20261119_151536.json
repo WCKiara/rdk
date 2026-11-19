@@ -1,0 +1,19 @@
+{
+  "program": "calibrate_tool_payload",
+  "time": "2026-11-19T15:15:36",
+  "robot_sn": "Enlight-LL-062034",
+  "software_ver": "v4.1",
+  "arm": "ARM_1",
+  "tool_name": "suyi_Nov12",
+  "source": "weighed_mass+stl",
+  "weighed_mass_kg": 0.035891,
+  "stl_reference": {"source": "suyi_flexiv_elements_studio_inputs.json", "CoM_m": [-7.60287232095e-05, 6.61111454207e-13, 0.0349630563303], "inertia_per_kg_m2": [0.00142137215692, 0.00141946566107, 0.000436406689093, 0, -2.27805291758e-06, 0]},
+  "previous_tool": "Flange_copy",
+  "previous_tool_params": {"mass_kg": 0.118000000715, "CoM_m": [-0.0518250018358, -0.25477001071, 0.24326300621], "inertia_kg_m2": [0.00210678996518, 0.00251718005165, 0.00125802995171, -0.000593548989855, -0.0011846399866, -0.00084389798576], "tcp_location": [-1.88935191545e-05, 0.000315127981594, 0.114058837295, 1, 0, 0, 0]},
+  "calibrations": [],
+  "applied": true,
+  "applied_params": {"mass_kg": 0.035891, "CoM_m": [-7.60287232095e-05, 6.61111454207e-13, 0.0349630563303], "inertia_kg_m2": [5.10144680839e-05, 5.09460420414e-05, 1.56630724783e-05, 0, -8.1761597265e-08, 0], "tcp_location": [0, 0, 0, 1, 0, 0, 0]},
+  "not_applied_reason": "",
+  "active_tool_after": "suyi_Nov12",
+  "error": ""
+}

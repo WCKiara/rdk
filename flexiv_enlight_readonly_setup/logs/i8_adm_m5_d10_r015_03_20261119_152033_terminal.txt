@@ -1,0 +1,25 @@
+[2026-11-19 15:20:35.577] [info] | | | | | | | | | |  Flexiv RDK v2.1  | | | | | | | | | |
+[2026-11-19 15:20:35.586] [info] [flexiv::rdk::Robot] Searching for [Enlight-LL-062034] ...
+[2026-11-19 15:20:35.635] [info] [flexiv::rdk::Robot] Connected to the robot
+[2026-11-19 15:20:35.787] [info] [flexiv::rdk::Robot] Validated license: RDK-Professional
+[2026-11-19 15:20:35.787] [info] [flexiv::rdk::Robot] Initialization complete
+[2026-11-19 15:20:35.808] [info] [flexiv::rdk::Robot] Control mode switched to [NRT_PRIMITIVE_EXECUTION]
+① ARM_1 回正中（Home，关节速度 20%），ARM_2 Hold。Ctrl+C 可随时停 ……
+ARM_1 已回正。
+② ARM_1 受力回 0 中（ZeroFTSensor），ARM_2 Hold。不要碰 ARM_1 ……
+ARM_1 受力回 0 前：外力矩 tau_ext [0.01 0.07 0.04 0.01 0.01 0.03 -0.05] Nm，末端外力 tcp_wrench [-0.30 -0.13 0.09 0.08 -0.08 0.06] N/Nm
+ARM_1 受力回 0 后：外力矩 tau_ext [0.00 0.00 -0.00 -0.00 0.00 0.00 0.00] Nm，末端外力 tcp_wrench [-0.00 0.01 0.00 -0.01 -0.00 -0.00] N/Nm
+[2026-11-19 15:20:49.329] [info] [flexiv::rdk::Robot] Control mode switched to [RT_CARTESIAN_MOTION_FORCE]
+ARM_1：名义刚度 K_x_nom [15000.0 15000.0 15000.0 2000.0 2000.0 2000.0] N/m、Nm/rad，阻尼比 0.7，全程不变；能拖的轴 X Y Z Rx Ry Rz：导纳 M [5.000 5.000 5.000 0.150 0.150 0.150] kg、kg·m²，D [10.00 10.00 10.00 0.30 0.30 0.30] N·s/m、N·m·s/rad，时间常数 M/D [0.500 0.500 0.500 0.500 0.500 0.500] s，死区 0.5 N、0.05 N·m；锁定的轴 无：目标不动；跟不上导纳目标 10 mm、0.03 rad 就停机；肘部拉回权重 0.1，参考姿态 = 进入 ③ 时的姿态
+ARM_1 安全限制（导纳期间）：目标速度上限 0.25 m/s、角速度上限 0.5 rad/s（只限速）；实测速度超过 0.5 m/s、角速度超过 1 rad/s、外力超过 20 N、外力矩超过 3 N·m 就停机
+ARM_2 hold 关节位置：[0.005 -0.699 -0.006 1.570 0.005 -0.873 -0.002] rad；离关节极限最近的是 J4，还差 0.524024 rad（范围 [-2.09439, 2.09439] rad）
+③ 实时模式 RT_CARTESIAN_MOTION_FORCE 已开始：ARM_2 hold 不动；ARM_1 先锁在当前位姿 ……
+ARM_1 导纳控制已开始，能拖的轴 X Y Z Rx Ry Rz，锁定的轴 无：推它就走，松手后减速停下、不弹回；ARM_2 hold 不动。按 Ctrl+C 结束。
+[2026-11-19 15:21:30.301] [info] [flexiv::rdk::Robot] Control mode switched to [IDLE]
+已 Stop()：机器人进入 IDLE 并保持当前位置。
+③ 期间 ARM_2 最大偏离 hold 位置：[0.0013 0.0001 0.0017 0.0001 0.0014 0.0001 0.0010] rad；最大速度：[0.003 0.002 0.003 0.003 0.004 0.002 0.003] rad/s
+导纳期间 ARM_1 最大跟踪误差：位置 1.0113 mm、姿态 0.00347127 rad（停机上限 10 mm、0.03 rad）
+导纳期间 ARM_1 实测最大：速度 0.248897 m/s、角速度 0.537375 rad/s、外力 7.02792 N、外力矩 0.672391 N·m（停机线 0.5 m/s、1 rad/s、20 N、3 N·m）；目标速度被限 0 ms、角速度被限 604 ms
+拖动 38.8255 秒期间主线程每 10 ms 查一次控制模式，3836 次都是 RT_CARTESIAN_MOTION_FORCE；③ 实时任务共发出 38929 次 StreamCartesianMotionForce（实时接口，1 kHz）
+日志已写入 logs/i8_adm_m5_d10_r015_03_20261119_152033.csv
+[2026-11-19 15:21:30.308] [info] >>>>> Flexiv RDK exited <<<<<

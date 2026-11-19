@@ -1,0 +1,20 @@
+[2026-11-19 15:21:36.506] [info] | | | | | | | | | |  Flexiv RDK v2.1  | | | | | | | | | |
+[2026-11-19 15:21:36.516] [info] [flexiv::rdk::Robot] Searching for [Enlight-LL-062034] ...
+[2026-11-19 15:21:36.564] [info] [flexiv::rdk::Robot] Connected to the robot
+[2026-11-19 15:21:36.717] [info] [flexiv::rdk::Robot] Validated license: RDK-Professional
+[2026-11-19 15:21:36.717] [info] [flexiv::rdk::Robot] Initialization complete
+[2026-11-19 15:21:36.738] [info] [flexiv::rdk::Robot] Control mode switched to [NRT_PRIMITIVE_EXECUTION]
+① ARM_1 回正中（Home，关节速度 20%），ARM_2 Hold。Ctrl+C 可随时停 ……
+ARM_1 已回正。
+② ARM_1 受力回 0 中（ZeroFTSensor），ARM_2 Hold。不要碰 ARM_1 ……
+ARM_1 受力回 0 前：外力矩 tau_ext [0.00 0.02 -0.07 0.05 -0.00 -0.01 0.05] Nm，末端外力 tcp_wrench [-0.27 0.12 0.06 -0.09 -0.04 -0.06] N/Nm
+ARM_1 受力回 0 后：外力矩 tau_ext [0.00 0.00 0.01 0.00 -0.00 0.00 0.00] Nm，末端外力 tcp_wrench [-0.00 -0.01 0.00 0.00 0.00 0.00] N/Nm
+[2026-11-19 15:21:41.792] [info] [flexiv::rdk::Robot] Control mode switched to [RT_CARTESIAN_MOTION_FORCE]
+ARM_1：名义刚度 K_x_nom [15000.0 15000.0 15000.0 2000.0 2000.0 2000.0] N/m、Nm/rad，阻尼比 0.7，全程不变；能拖的轴 X Y Z Rx Ry Rz：导纳 M [5.000 5.000 5.000 0.150 0.150 0.150] kg、kg·m²，D [10.00 10.00 10.00 0.30 0.30 0.30] N·s/m、N·m·s/rad，时间常数 M/D [0.500 0.500 0.500 0.500 0.500 0.500] s，死区 0.5 N、0.05 N·m；锁定的轴 无：目标不动；跟不上导纳目标 10 mm、0.03 rad 就停机；肘部拉回权重 0.1，参考姿态 = 进入 ③ 时的姿态
+ARM_1 安全限制（导纳期间）：目标速度上限 0.25 m/s、角速度上限 0.5 rad/s（只限速）；实测速度超过 0.5 m/s、角速度超过 1 rad/s、外力超过 20 N、外力矩超过 3 N·m 就停机
+ARM_2 hold 关节位置：[0.006 -0.699 -0.008 1.570 0.006 -0.873 -0.003] rad；离关节极限最近的是 J4，还差 0.524014 rad（范围 [-2.09439, 2.09439] rad）
+③ 实时模式 RT_CARTESIAN_MOTION_FORCE 已开始：ARM_2 hold 不动；ARM_1 先锁在当前位姿 ……
+[2026-11-19 15:21:43.829] [info] [flexiv::rdk::Robot] Control mode switched to [IDLE]
+已 Stop()：机器人进入 IDLE 并保持当前位置。
+③ 期间 ARM_2 最大偏离 hold 位置：[0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000] rad；最大速度：[0.000 0.000 0.000 0.000 0.000 0.000 0.000] rad/s
+[2026-11-19 15:21:43.831] [info] >>>>> Flexiv RDK exited <<<<<
